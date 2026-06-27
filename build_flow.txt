@@ -1,7 +1,20 @@
 (One time if you want a hard reset on the database):
     "rm -rf ./photo_db" to reset
 
-"python embed_photos.py --photos ~/Pictures/"Photos Library.photoslibrary"/originals/ --db ./photo_db" to re-index
+"python backend/embed_photos.py --photos ~/Pictures/"Photos Library.photoslibrary"/originals/ --db ./photo_db" to re-index
 
-"python3 server.py --db ./photo_db" in one terminal
+"python3 backend/server.py --db ./photo_db" in one terminal
 "cd photo-search && npm run dev" in another terminal
+
+
+New run commands
+
+  # Backend (from repo root)
+  source .venv/bin/activate
+  python backend/server.py            # port 5001, --db defaults to ./photo_db
+
+  # Re-indexing later (unchanged behavior)
+  python backend/embed_photos.py --photos ~/Pictures/"Photos Library.photoslibrary"/originals/
+
+  # Frontend
+  cd photo-search && npm run dev      # Vite on :5173

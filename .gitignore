@@ -3,3 +3,10 @@ photo_db/
 
 # Virtual Environment Stuff
 .venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Claude Prompts and Information
+Claude/
