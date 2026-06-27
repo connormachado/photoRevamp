@@ -20,11 +20,15 @@ import io
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 from PIL import Image
+import pillow_heif
 import chromadb
 
 import search
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
 from pathlib import Path
+
+# Teach PIL to open HEIC/HEIF so thumbnails and full images render in the browser.
+pillow_heif.register_heif_opener()
 
 app = Flask(__name__)
 CORS(app)
@@ -100,11 +104,23 @@ def thumbnail():
 
 @app.route("/full")
 def full_image():
-    """Serves the original full-res image."""
+    """Serves the original full-res image.
+
+    HEIC is converted to JPEG in memory because Chrome refuses to render HEIC
+    natively (ERR_BLOCKED_BY_ORB). Everything else is sent as-is.
+    """
     path = request.args.get("path", "")
     p = Path(path)
     if not p.exists():
         return jsonify({"error": "file not found"}), 404
+
+    if p.suffix.lower() == ".heic":
+        img = Image.open(p).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        buf.seek(0)
+        return send_file(buf, mimetype="image/jpeg")
+
     return send_file(str(p))
 
 
