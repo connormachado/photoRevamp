@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef } from "react";
+import OpenInPhotosButton from "./components/OpenInPhotosButton";
 
 const API = "http://localhost:5001";
 
@@ -152,6 +153,7 @@ function Modal({ photo, onClose, onSearchSimilar }) {
             </div>
           )}
           <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+            <OpenInPhotosButton path={photo.path} />
             <button
               onClick={() => { onSearchSimilar(photo); onClose(); }}
               style={{

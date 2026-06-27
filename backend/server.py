@@ -24,6 +24,7 @@ import pillow_heif
 import chromadb
 
 import search
+import cleanup
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
 from pathlib import Path
 
@@ -122,6 +123,16 @@ def full_image():
         return send_file(buf, mimetype="image/jpeg")
 
     return send_file(str(p))
+
+
+@app.route("/open-in-photos", methods=["POST"])
+def open_in_photos():
+    """Reveal a photo in Apple Photos.app so the user can review/delete it."""
+    data = request.json or {}
+    path = data.get("path", "")
+    if not path:
+        return jsonify({"success": False, "error": "no path"}), 400
+    return jsonify(cleanup.open_in_photos(path))
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
