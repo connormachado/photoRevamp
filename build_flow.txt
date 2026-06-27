@@ -1,0 +1,7 @@
+(One time if you want a hard reset on the database):
+    "rm -rf ./photo_db" to reset
+
+"python embed_photos.py --photos ~/Pictures/"Photos Library.photoslibrary"/originals/ --db ./photo_db" to re-index
+
+"python3 server.py --db ./photo_db" in one terminal
+"cd photo-search && npm run dev" in another terminal

@@ -1,0 +1,5 @@
+# Photo stuff
+photo_db/
+
+# Virtual Environment Stuff
+.venv/

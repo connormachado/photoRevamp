@@ -1,0 +1,8 @@
+open-clip-torch 
+chromadb 
+Pillow 
+tqdm 
+torch 
+flask 
+flask-cors
+pillow-heif
