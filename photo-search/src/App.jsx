@@ -14,6 +14,14 @@ const SUGGESTIONS = [
   "birthday celebrations",
 ];
 
+// "All" is capped at 200 so a huge result set doesn't freeze the grid.
+const COUNT_OPTIONS = [
+  { label: "12", value: 12 },
+  { label: "24", value: 24 },
+  { label: "48", value: 48 },
+  { label: "All", value: 200 },
+];
+
 function PhotoCard({ photo, onClick }) {
   const [loaded, setLoaded] = useState(false);
   const score = Math.round(photo.score * 100);
@@ -199,7 +207,10 @@ export default function App() {
   const [searchLabel, setSearchLabel] = useState("");
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [stats, setStats] = useState(null);
+  const [resultCount, setResultCount] = useState(24); // how many results to fetch
   const fileRef = useRef();
+  // Remembers how to re-run the last search, so toggling the count re-fetches it.
+  const lastSearchRef = useRef(null);
 
   // Load stats on mount
   useState(() => {
@@ -209,8 +220,9 @@ export default function App() {
       .catch(() => {});
   });
 
-  const searchByText = useCallback(async (q) => {
+  const searchByText = useCallback(async (q, n = 24) => {
     if (!q.trim()) return;
+    lastSearchRef.current = (count) => searchByText(q, count);
     setLoading(true);
     setError("");
     setSearchLabel(`"${q}"`);
@@ -218,7 +230,7 @@ export default function App() {
       const res = await fetch(`${API}/search/text`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q, n: 24 }),
+        body: JSON.stringify({ query: q, n }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -230,7 +242,8 @@ export default function App() {
     }
   }, []);
 
-  const searchByImage = useCallback(async (file) => {
+  const searchByImage = useCallback(async (file, n = 24) => {
+    lastSearchRef.current = (count) => searchByImage(file, count);
     setLoading(true);
     setError("");
     setSearchLabel(`photos similar to "${file.name}"`);
@@ -241,7 +254,7 @@ export default function App() {
         const res = await fetch(`${API}/search/image`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image_b64: b64, n: 24 }),
+          body: JSON.stringify({ image_b64: b64, n }),
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
@@ -263,10 +276,16 @@ export default function App() {
       .then(r => r.blob())
       .then(blob => {
         const file = new File([blob], photo.filename, { type: "image/jpeg" });
-        searchByImage(file);
+        searchByImage(file, resultCount);
       })
       .catch(() => setLoading(false));
-  }, [searchByImage]);
+  }, [searchByImage, resultCount]);
+
+  // Change how many results to show and immediately re-run the current search.
+  const changeCount = useCallback((n) => {
+    setResultCount(n);
+    if (lastSearchRef.current) lastSearchRef.current(n);
+  }, []);
 
   return (
     <>
@@ -351,7 +370,7 @@ export default function App() {
                 <input
                   value={query}
                   onChange={e => setQuery(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && searchByText(query)}
+                  onKeyDown={e => e.key === "Enter" && searchByText(query, resultCount)}
                   placeholder='Try "hiking with friends" or "rainy city streets"'
                   style={{
                     flex: 1,
@@ -364,7 +383,7 @@ export default function App() {
                 />
               </div>
               <button
-                onClick={() => searchByText(query)}
+                onClick={() => searchByText(query, resultCount)}
                 disabled={loading}
                 style={{
                   padding: "0 24px",
@@ -388,7 +407,7 @@ export default function App() {
               onDrop={e => {
                 e.preventDefault();
                 const file = e.dataTransfer.files[0];
-                if (file) searchByImage(file);
+                if (file) searchByImage(file, resultCount);
               }}
               style={{
                 border: "2px dashed #2a2a2a",
@@ -411,7 +430,7 @@ export default function App() {
                 style={{ display: "none" }}
                 onChange={e => {
                   const file = e.target.files[0];
-                  if (file) searchByImage(file);
+                  if (file) searchByImage(file, resultCount);
                 }}
               />
             </div>
@@ -423,7 +442,7 @@ export default function App() {
               {SUGGESTIONS.map(s => (
                 <button
                   key={s}
-                  onClick={() => { setQuery(s); searchByText(s); }}
+                  onClick={() => { setQuery(s); searchByText(s, resultCount); }}
                   style={{
                     padding: "5px 12px",
                     background: "#141414",
@@ -458,8 +477,35 @@ export default function App() {
         {/* Results */}
         {results.length > 0 && (
           <div style={{ maxWidth: 960, margin: "0 auto" }}>
-            <div style={{ marginBottom: 16, color: "#555", fontSize: 13 }}>
-              {results.length} results for {searchLabel}
+            <div style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+              <span style={{ color: "#555", fontSize: 13 }}>
+                {results.length} results for {searchLabel}
+              </span>
+              <div style={{ display: "flex", gap: 2, background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8, padding: 3 }}>
+                {COUNT_OPTIONS.map(opt => {
+                  const active = resultCount === opt.value;
+                  return (
+                    <button
+                      key={opt.label}
+                      onClick={() => changeCount(opt.value)}
+                      disabled={loading}
+                      style={{
+                        padding: "5px 12px",
+                        borderRadius: 6,
+                        border: "none",
+                        background: active ? "rgba(129,140,248,0.15)" : "transparent",
+                        color: active ? "#818cf8" : "#666",
+                        fontSize: 12,
+                        fontWeight: active ? 700 : 500,
+                        cursor: loading ? "default" : "pointer",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
             <div style={{
               display: "grid",
