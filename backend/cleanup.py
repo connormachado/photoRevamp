@@ -14,38 +14,29 @@ import chromadb
 
 from utils import DEFAULT_DB_PATH, COLLECTION_NAME
 
+def remove_missing_photos(collection):
+    CHUNK_SIZE = 5000
+    offset = 0
+    ids_to_delete = []
+    total_checked = 0
 
-def remove_missing_photos(collection=None) -> dict:
-    """Prune ChromaDB entries whose underlying file no longer exists on disk.
+    while True:
+        batch = collection.get(include=["metadatas"], limit=CHUNK_SIZE, offset=offset)
+        if not batch["ids"]:
+            break
 
-    When a photo is deleted (in Photos.app or Finder), ChromaDB still holds its
-    embedding + metadata and it keeps surfacing in search with a dead path. This
-    reads every entry's stored `path`, checks os.path.exists, and deletes the
-    ones that are gone.
+        for id_, metadata in zip(batch["ids"], batch["metadatas"]):
+            path = metadata.get("path")
+            if path and not os.path.exists(path):
+                ids_to_delete.append(id_)
 
-    Does ZERO embedding work — only reads from and deletes within ChromaDB. Safe
-    to call repeatedly: a clean library removes nothing. Pass `collection` to
-    reuse an open handle (server does this); otherwise it opens its own client.
-    Returns {"removed": <count>, "checked": <total>}.
-    """
-    if collection is None:
-        client = chromadb.PersistentClient(path=str(DEFAULT_DB_PATH))
-        collection = client.get_collection(COLLECTION_NAME)
+        total_checked += len(batch["ids"])
+        offset += CHUNK_SIZE
 
-    stored = collection.get(include=["metadatas"])  # ids are always returned
-    ids = stored["ids"]
-    metadatas = stored["metadatas"]
+    if ids_to_delete:
+        collection.delete(ids=ids_to_delete)
 
-    dead_ids = [
-        id_
-        for id_, meta in zip(ids, metadatas)
-        if not os.path.exists((meta or {}).get("path", ""))
-    ]
-
-    if dead_ids:
-        collection.delete(ids=dead_ids)
-
-    return {"removed": len(dead_ids), "checked": len(ids)}
+    return {"removed": len(ids_to_delete), "checked": total_checked}
 
 
 def open_in_photos(path: str) -> dict:

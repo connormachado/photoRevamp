@@ -68,10 +68,17 @@ def embed_images_batch(paths: list[Path], model, preprocess, device) -> list[lis
 def index_photos(photos_dir: str, db_path: str):
     """Walk photos_dir, embed everything not yet in the DB, upsert into ChromaDB."""
     photos_root = Path(photos_dir).expanduser()
+    # all_photos = [
+    #     p for p in photos_root.rglob("*")
+    #     if p.suffix.lower() in SUPPORTED_EXTENSIONS
+    # ]
+
     all_photos = [
         p for p in photos_root.rglob("*")
-        if p.suffix.lower() in SUPPORTED_EXTENSIONS
+        if p.suffix.lower() == ".jpeg" and "_5005_c" in p.stem
     ]
+    
+
     print(f"Found {len(all_photos):,} photos in {photos_root}")
 
     # Init ChromaDB (local persistent)
