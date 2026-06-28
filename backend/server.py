@@ -135,6 +135,13 @@ def open_in_photos():
     return jsonify(cleanup.open_in_photos(path))
 
 
+@app.route("/cleanup", methods=["POST"])
+def cleanup_missing():
+    """Prune ChromaDB entries whose files have been deleted from disk."""
+    result = cleanup.remove_missing_photos(collection)
+    return jsonify(result)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -144,4 +151,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     load_everything(args.db)
+
+    # Prune entries for photos deleted off disk so they stop polluting search.
+    startup_result = cleanup.remove_missing_photos(collection)
+    print(f"[startup] Cleanup: removed {startup_result['removed']} missing photos out of {startup_result['checked']} checked")
+
     app.run(port=args.port, debug=False)

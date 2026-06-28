@@ -5,10 +5,10 @@ New run commands
 
   # Backend (from repo root)
   source .venv/bin/activate
-  python backend/server.py            # port 5001, --db defaults to ./photo_db
+  python3 backend/server.py            # port 5001, --db defaults to ./photo_db
 
   # Re-indexing later (unchanged behavior)
-  python backend/embed_photos.py --photos ~/Pictures/"Photos Library.photoslibrary"/originals/
+  python3 backend/embed_photos.py --photos ~/Pictures/"Photos Library.photoslibrary"/originals/
 
   # Frontend
   cd photo-search && npm run dev      # Vite on :5173

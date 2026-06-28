@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import OpenInPhotosButton from "./components/OpenInPhotosButton";
+import SyncButton from "./components/SyncButton";
 
 const API = "http://localhost:5001";
 
@@ -332,8 +333,9 @@ export default function App() {
 
         {/* Search bar */}
         <div style={{ maxWidth: 960, margin: "0 auto 32px" }}>
-          {/* Mode toggle */}
-          <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
+          {/* Mode toggle + library sync */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ display: "flex", gap: 4 }}>
             {["text", "image"].map(m => (
               <button
                 key={m}
@@ -353,6 +355,8 @@ export default function App() {
                 {m === "text" ? "🔤 Text search" : "🖼 Image search"}
               </button>
             ))}
+            </div>
+            <SyncButton />
           </div>
 
           {mode === "text" ? (
