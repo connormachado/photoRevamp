@@ -8,7 +8,6 @@ Keeps the camera-roll-cleanup workflow inside the apps the user already trusts
 
 import os
 import subprocess
-from pathlib import Path
 
 import chromadb
 
@@ -39,44 +38,25 @@ def remove_missing_photos(collection):
     return {"removed": len(ids_to_delete), "checked": total_checked}
 
 
-def open_in_photos(path: str) -> dict:
-    """Reveal a photo in Apple Photos.app.
+def reveal_in_photos(uuid: str) -> dict:
+    """Activate Photos.app and spotlight the media item with this asset UUID.
 
-    Photos.app has no API to open a file by path, so we find the media item and
-    `spotlight` it — that scrolls to and highlights the specific item (unlike the
-    unreliable `search` command). Returns {"success": bool, "error"?: str}.
-
-    For iCloud libraries the on-disk originals are UUID-named (e.g.
-    "9F958F95-….heic") and that UUID is the prefix of the Photos media item id
-    ("9F958F95-…/L0/001"), so we match on `id` first. We fall back to matching
-    `filename` for libraries where the on-disk name is the original camera name.
+    Photos are indexed from the derivatives cache, whose paths Photos doesn't
+    know about — so we reveal by the Apple Photos asset UUID (stored as
+    `apple_uuid` in metadata) via `spotlight media item id`, which scrolls to
+    and highlights the exact photo. Returns {"success": bool, "error"?: str}.
     """
-    # The on-disk stem: a UUID for iCloud libraries, else the original filename.
-    # Strip quotes so the name can't break out of the AppleScript string literal.
-    name = Path(path).stem.replace('"', "").replace("\\", "")
-    applescript = f'''
-    tell application "Photos"
-      activate
-      set theItems to (every media item whose id contains "{name}")
-      if (count of theItems) is 0 then
-        set theItems to (every media item whose filename contains "{name}")
-      end if
-      if (count of theItems) > 0 then
-        set theItem to item 1 of theItems
-        spotlight theItem
-      else
-        error "No photo matching \\"{name}\\" found in the Photos library"
-      end if
-    end tell
-    '''
+    # Strip quotes so the UUID can't break out of the AppleScript string literal.
+    uuid = uuid.replace('"', "").replace("\\", "")
     try:
-        result = subprocess.run(
-            ["osascript", "-e", applescript],
-            capture_output=True,
-            text=True,
+        subprocess.run(
+            ["osascript", "-e", 'tell application "Photos" to activate'],
+            check=True, capture_output=True, text=True,
         )
-        if result.returncode != 0:
-            return {"success": False, "error": result.stderr.strip() or "osascript failed"}
+        subprocess.run(
+            ["osascript", "-e", f'tell application "Photos" to spotlight media item id "{uuid}"'],
+            check=True, capture_output=True, text=True,
+        )
         return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except subprocess.CalledProcessError as e:
+        return {"success": False, "error": (e.stderr or "").strip() or str(e)}

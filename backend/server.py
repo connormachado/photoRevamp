@@ -125,14 +125,26 @@ def full_image():
     return send_file(str(p))
 
 
-@app.route("/open-in-photos", methods=["POST"])
-def open_in_photos():
-    """Reveal a photo in Apple Photos.app so the user can review/delete it."""
-    data = request.json or {}
-    path = data.get("path", "")
-    if not path:
-        return jsonify({"success": False, "error": "no path"}), 400
-    return jsonify(cleanup.open_in_photos(path))
+@app.route("/reveal", methods=["POST"])
+def reveal_in_photos():
+    """Spotlight a photo in Apple Photos.app via its stored Apple asset UUID."""
+    data = request.get_json() or {}
+    file_id = data.get("id")
+    if not file_id:
+        return jsonify({"error": "No id provided"}), 400
+
+    result = collection.get(ids=[file_id], include=["metadatas"])
+    if not result["ids"]:
+        return jsonify({"error": "Photo not found"}), 404
+
+    uuid = (result["metadatas"][0] or {}).get("apple_uuid", "")
+    if not uuid:
+        return jsonify({"error": "No Apple UUID found for this photo"}), 400
+
+    res = cleanup.reveal_in_photos(uuid)
+    if not res.get("success"):
+        return jsonify({"error": res.get("error", "osascript failed")}), 500
+    return jsonify({"success": True})
 
 
 @app.route("/cleanup", methods=["POST"])

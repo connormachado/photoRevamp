@@ -3,8 +3,8 @@ import { useState } from "react";
 const API = "http://localhost:5001";
 
 // A small button shown in the photo modal. Clicking it asks the backend to
-// reveal this photo in Apple Photos.app, where the user can review or delete it.
-export default function OpenInPhotosButton({ path }) {
+// spotlight this photo in Apple Photos.app via its Apple asset UUID.
+export default function OpenInPhotosButton({ id }) {
   // One state machine drives the whole button: idle → loading → success | error.
   const [status, setStatus] = useState("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -14,13 +14,13 @@ export default function OpenInPhotosButton({ path }) {
     setStatus("loading");
     setErrorMsg("");
     try {
-      const res = await fetch(`${API}/open-in-photos`, {
+      const res = await fetch(`${API}/reveal`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ id }),
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Couldn't open in Photos");
+      if (!res.ok || !data.success) throw new Error(data.error || "Couldn't show in Photos");
       setStatus("success");
       setTimeout(() => setStatus("idle"), 1200); // flash green, then reset
     } catch (err) {
@@ -33,7 +33,7 @@ export default function OpenInPhotosButton({ path }) {
   const label =
     status === "loading" ? "Opening…" :
     status === "success" ? "Opened ✓" :
-    "Open in Photos";
+    "Show in Photos";
 
   const background =
     status === "success" ? "#22c55e" :

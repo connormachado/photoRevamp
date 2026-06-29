@@ -54,6 +54,9 @@ def extract_metadata(path: Path) -> dict:
         "lat": "",
         "lon": "",
     }
+    # Extract Apple Photos UUID from derivative filename e.g. {UUID}_4_5005_c.jpeg
+    stem_parts = path.stem.split("_")
+    meta["apple_uuid"] = stem_parts[0] if len(stem_parts) > 0 else ""
     try:
         img = Image.open(path)
         exif_data = img._getexif()

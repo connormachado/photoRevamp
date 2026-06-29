@@ -58,8 +58,10 @@ def search_image(img, n, collection, model, preprocess, device) -> list[dict]:
 def format_results(results) -> list[dict]:
     """Flatten a ChromaDB query response into the shape the frontend expects."""
     out = []
-    for meta, dist in zip(results["metadatas"][0], results["distances"][0]):
+    ids = results.get("ids", [[]])[0]
+    for id_, meta, dist in zip(ids, results["metadatas"][0], results["distances"][0]):
         out.append({
+            "id": id_,  # ChromaDB file_id (MD5 of path) — used by /reveal
             "path": meta.get("path", ""),
             "filename": meta.get("filename", ""),
             "score": round(1 - dist, 4),

@@ -1,6 +1,6 @@
 # CLAUDE.md — photo memory
 
-> This file is auto-loaded by Claude Code at the start of every session. Keep it current. For the full feature list and long-term plans, see `ROADMAP.md`.
+> This file is auto-loaded by Claude Code at the start of every session. Keep it current. For the full feature list and long-term plans, see `RODEMAP.md`.
 
 ## Critical rules
 
@@ -26,7 +26,7 @@ photoApp/
 
 ├── CLAUDE.md
 
-├── ROADMAP.md
+├── RODEMAP.md
 
 ├── stats.json           # delete counter persistence — GITIGNORED
 
@@ -84,10 +84,10 @@ photoApp/
 
 ## Status / next steps
 
-See `ROADMAP.md` for the full list. Current state:
+See `RODEMAP.md` for the full list. Current state:
 
 **Completed:**
-- ✅ Repo structure + CLAUDE.md / ROADMAP.md
+- ✅ Repo structure + CLAUDE.md / RODEMAP.md
 - ✅ `server.py` refactored into thin routes + `backend/` modules (`utils.py`, `search.py`)
 - ✅ HEIC → JPEG on-the-fly conversion in `/photo` endpoint
 - ✅ "Open in Photos" button + `/open-in-photos` AppleScript endpoint

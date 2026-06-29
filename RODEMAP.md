@@ -48,7 +48,7 @@ photoApp/
 │           ├── useSearch.js
 │           └── useSelection.js       # bulk select state
 │
-└── ROADMAP.md
+└── RODEMAP.md
 ```
 
 The key principle: **each backend feature is its own file**, and **each frontend view is its own component**. `server.py` stays thin — it just wires routes to the right module. That way Claude Code can work on `duplicates.py` without ever touching `search.py`.
