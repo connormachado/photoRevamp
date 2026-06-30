@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useStats } from "../context/StatsContext";
 
 const API = "http://localhost:5001";
 
@@ -8,6 +9,9 @@ export default function OpenInPhotosButton({ id }) {
   // One state machine drives the whole button: idle → loading → success | error.
   const [status, setStatus] = useState("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  // Opening a photo in Photos is a strong signal the user is about to delete
+  // it, so we optimistically bump the delete counter on success.
+  const { incrementDeleteCount } = useStats();
 
   async function handleClick(e) {
     e.stopPropagation(); // don't let the click bubble up and close the modal
@@ -21,6 +25,7 @@ export default function OpenInPhotosButton({ id }) {
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Couldn't show in Photos");
+      incrementDeleteCount();
       setStatus("success");
       setTimeout(() => setStatus("idle"), 1200); // flash green, then reset
     } catch (err) {

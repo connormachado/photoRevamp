@@ -1,5 +1,6 @@
 # Photo stuff
 photo_db/
+stats.json
 
 # Virtual Environment Stuff
 .venv/

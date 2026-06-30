@@ -77,6 +77,12 @@ photoApp/
 - **Stable IDs.** Photos are keyed by `file_id()` (MD5 of file path) so indexing stays incremental and resumable.
 - **No git operations.** Do not commit, push, or otherwise write to git history.
 
+## Non-obvious wiring
+
+- **`GET /stats` is overloaded.** It returns one merged payload, `{total, deleted}`: `total` is the live `collection.count()` (header "X photos indexed"), `deleted` comes from `stats.py` reading `stats.json`. Don't repurpose `/stats` for just one of them — both the header and `DeleteCounter` read from it. The delete counter is bumped via `POST /stats/increment` with `{delta: ±1}`.
+- **Chip queries are the single source of truth.** The six junk-cull chips live in the exported `CHIPS` array in `SearchChips.jsx`. Junk Hunt re-imports `CHIPS` and fires all of them in parallel — edit the list in one place. Each chip carries a display `label` (with emoji) separate from the `query` sent to CLIP; never send the emoji to CLIP.
+- **"Show in Photos" auto-bumps the delete counter.** On a successful `/reveal`, `OpenInPhotosButton` calls `incrementDeleteCount()` (an optimistic "about to delete" proxy). If the counter drifts up unexpectedly, this is why. The shared `incrementDeleteCount`/`decrementDeleteCount` come from `StatsContext`, which wraps `App`'s returned tree.
+
 ## Working with the user
 
 - Comfortable with Python; newer to React — explain React concepts clearly when they come up.
@@ -97,5 +103,4 @@ See `RODEMAP.md` for the full list. Current state:
 - ✅ Junk Hunt mode (`JunkHunt` button, parallel queries, deduped results)
 
 **Immediate next:**
-1. Fix "Open in Photos" — currently opens Photos.app but doesn't navigate to the specific photo
-2. Duplicate finder (`duplicates.py`, cosine sim > 0.97, `DuplicateReview.jsx`)
+1. Duplicate finder (`duplicates.py`, cosine sim > 0.97, `DuplicateReview.jsx`)

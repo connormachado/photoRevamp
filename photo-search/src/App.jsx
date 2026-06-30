@@ -1,6 +1,9 @@
 import { useState, useCallback, useRef } from "react";
 import OpenInPhotosButton from "./components/OpenInPhotosButton";
 import SyncButton from "./components/SyncButton";
+import SearchChips, { CHIPS } from "./components/SearchChips";
+import DeleteCounter from "./components/DeleteCounter";
+import { StatsProvider } from "./context/StatsContext";
 
 const API = "http://localhost:5001";
 
@@ -209,6 +212,8 @@ export default function App() {
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [stats, setStats] = useState(null);
   const [resultCount, setResultCount] = useState(24); // how many results to fetch
+  const [junkHunt, setJunkHunt] = useState(false); // viewing the merged junk queue?
+  const [junkCount, setJunkCount] = useState(null); // result count for the button badge
   const fileRef = useRef();
   // Remembers how to re-run the last search, so toggling the count re-fetches it.
   const lastSearchRef = useRef(null);
@@ -223,6 +228,7 @@ export default function App() {
 
   const searchByText = useCallback(async (q, n = 24) => {
     if (!q.trim()) return;
+    setJunkHunt(false); // any direct search exits the junk queue
     lastSearchRef.current = (count) => searchByText(q, count);
     setLoading(true);
     setError("");
@@ -244,6 +250,7 @@ export default function App() {
   }, []);
 
   const searchByImage = useCallback(async (file, n = 24) => {
+    setJunkHunt(false); // any direct search exits the junk queue
     lastSearchRef.current = (count) => searchByImage(file, count);
     setLoading(true);
     setError("");
@@ -288,8 +295,51 @@ export default function App() {
     if (lastSearchRef.current) lastSearchRef.current(n);
   }, []);
 
+  // Clicking a chip mirrors typing its query and hitting Enter.
+  const runChip = useCallback((q) => {
+    setQuery(q);
+    searchByText(q, resultCount);
+  }, [searchByText, resultCount]);
+
+  // Junk Hunt: fire all six chip queries at once, merge + dedupe by path, and
+  // show the combined "worst photos" queue in the grid.
+  const runJunkHunt = useCallback(async () => {
+    setMode("text");
+    setQuery("");
+    setError("");
+    setLoading(true);
+    setSearchLabel("your library's worst photos");
+    lastSearchRef.current = null; // the count toggle doesn't apply to junk hunt
+    try {
+      const responses = await Promise.all(
+        CHIPS.map(chip =>
+          fetch(`${API}/search/text`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: chip.query, n: 48 }),
+          }).then(r => r.json())
+        )
+      );
+      const byPath = new Map();
+      for (const data of responses) {
+        for (const photo of data.results || []) {
+          if (!byPath.has(photo.path)) byPath.set(photo.path, photo);
+        }
+      }
+      const merged = [...byPath.values()];
+      setResults(merged);
+      setJunkCount(merged.length);
+      setJunkHunt(true);
+    } catch (e) {
+      setError("Couldn't reach the server. Is server.py running on port 5001?");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   return (
-    <>
+    <StatsProvider>
+      <DeleteCounter />
       <style>{`
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { background: #0a0a0a; color: #e5e5e5; font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; }
@@ -356,7 +406,28 @@ export default function App() {
               </button>
             ))}
             </div>
-            <SyncButton />
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <button
+                onClick={runJunkHunt}
+                disabled={loading}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid",
+                  borderColor: junkHunt ? "#f59e0b" : "rgba(245,158,11,0.4)",
+                  background: junkHunt ? "rgba(245,158,11,0.18)" : "rgba(245,158,11,0.08)",
+                  color: "#f59e0b",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: loading ? "default" : "pointer",
+                  opacity: loading ? 0.6 : 1,
+                  transition: "all 0.15s",
+                }}
+              >
+                🧹 Junk Hunt{junkHunt && junkCount != null ? ` (${junkCount} found)` : ""}
+              </button>
+              <SyncButton />
+            </div>
           </div>
 
           {mode === "text" ? (
@@ -440,9 +511,14 @@ export default function App() {
             </div>
           )}
 
-          {/* Suggestions */}
+          {/* Junk-cull prompt chips — fire a culling search on click */}
+          {mode === "text" && (
+            <SearchChips query={junkHunt ? "" : query} onSearch={runChip} />
+          )}
+
+          {/* Content-discovery suggestions (only before the first search) */}
           {mode === "text" && results.length === 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
               {SUGGESTIONS.map(s => (
                 <button
                   key={s}
@@ -481,11 +557,29 @@ export default function App() {
         {/* Results */}
         {results.length > 0 && (
           <div style={{ maxWidth: 960, margin: "0 auto" }}>
+            {junkHunt && (
+              <div style={{
+                marginBottom: 16,
+                padding: "10px 16px",
+                background: "rgba(245,158,11,0.1)",
+                border: "1px solid rgba(245,158,11,0.35)",
+                borderRadius: 8,
+                color: "#f59e0b",
+                fontSize: 12,
+                fontWeight: 700,
+                letterSpacing: 1.5,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}>
+                🧹 JUNK HUNT MODE — merged culling queue from all 6 categories. Search or pick a chip to exit.
+              </div>
+            )}
             <div style={{ marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <span style={{ color: "#555", fontSize: 13 }}>
                 {results.length} results for {searchLabel}
               </span>
-              <div style={{ display: "flex", gap: 2, background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8, padding: 3 }}>
+              <div style={{ display: junkHunt ? "none" : "flex", gap: 2, background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8, padding: 3 }}>
                 {COUNT_OPTIONS.map(opt => {
                   const active = resultCount === opt.value;
                   return (
@@ -539,6 +633,6 @@ export default function App() {
         onClose={() => setSelectedPhoto(null)}
         onSearchSimilar={handleSearchSimilar}
       />
-    </>
+    </StatsProvider>
   );
 }

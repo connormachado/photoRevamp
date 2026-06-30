@@ -25,6 +25,7 @@ import chromadb
 
 import search
 import cleanup
+import stats as stats_store
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
 from pathlib import Path
 
@@ -57,7 +58,17 @@ def load_everything(db_path: str):
 
 @app.route("/stats")
 def stats():
-    return jsonify({"total": collection.count()})
+    # Merge the indexed-photo count (used by the header) with the persisted
+    # delete counter so the UI can read both from one payload.
+    return jsonify({"total": collection.count(), **stats_store.get_stats()})
+
+
+@app.route("/stats/increment", methods=["POST"])
+def stats_increment():
+    """Bump the delete counter by {"delta": +1 | -1} and return updated stats."""
+    data = request.get_json() or {}
+    delta = int(data.get("delta", 0))
+    return jsonify(stats_store.update_stats(delta))
 
 
 @app.route("/search/text", methods=["POST"])
@@ -168,4 +179,4 @@ if __name__ == "__main__":
     startup_result = cleanup.remove_missing_photos(collection)
     print(f"[startup] Cleanup: removed {startup_result['removed']} missing photos out of {startup_result['checked']} checked")
 
-    app.run(port=args.port, debug=False)
+    app.run(port=args.port, debug=True)
