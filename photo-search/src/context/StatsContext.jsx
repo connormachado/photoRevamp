@@ -46,9 +46,12 @@ export function StatsProvider({ children }) {
 
   const incrementDeleteCount = useCallback(() => bump(1), [bump]);
   const decrementDeleteCount = useCallback(() => bump(-1), [bump]);
+  // Delta-capable entry point for bulk logging (e.g. "I just deleted 23").
+  // Same single persistence path as the +/− buttons.
+  const addToDeleteCount = useCallback((n) => bump(n), [bump]);
 
   return (
-    <StatsContext.Provider value={{ deleted, incrementDeleteCount, decrementDeleteCount }}>
+    <StatsContext.Provider value={{ deleted, incrementDeleteCount, decrementDeleteCount, addToDeleteCount }}>
       {children}
     </StatsContext.Provider>
   );

@@ -1,4 +1,5 @@
 import { useStats } from "../context/StatsContext";
+import BulkAddPad from "./BulkAddPad";
 
 // A floating card in the top-right corner showing how many photos have been
 // culled. The count is sourced from StatsContext (which persists it to the
@@ -45,6 +46,7 @@ export default function DeleteCounter() {
           {deleted}
         </span>
         <button style={btn} onClick={incrementDeleteCount} aria-label="increment">+</button>
+        <BulkAddPad />
       </div>
       <div style={{ color: "#666", fontSize: 11, marginTop: 6, textTransform: "uppercase", letterSpacing: 1 }}>
         photos deleted
