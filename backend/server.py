@@ -24,6 +24,7 @@ import pillow_heif
 import chromadb
 
 import search
+import graph_view
 import cleanup
 import stats as stats_store
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
@@ -95,6 +96,16 @@ def search_image():
     img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
     results = search.search_image(img, n, collection, model, preprocess, device)
     return jsonify({"results": results})
+
+
+@app.route("/api/graph-view")
+def graph_view_route():
+    query = request.args.get("query", "").strip()
+    n = int(request.args.get("n", 50))
+    if not query:
+        return jsonify({"error": "empty query"}), 400
+    payload = graph_view.graph_view(query, n, collection, model, tokenizer, device)
+    return jsonify(payload)
 
 
 @app.route("/thumbnail")

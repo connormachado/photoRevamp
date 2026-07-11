@@ -1,8 +1,11 @@
-open-clip-torch 
-chromadb 
-Pillow 
-tqdm 
-torch 
-flask 
+open-clip-torch
+chromadb
+Pillow
+tqdm
+torch
+flask
 flask-cors
 pillow-heif
+umap-learn
+scikit-learn
+joblib

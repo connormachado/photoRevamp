@@ -6,6 +6,12 @@
 
 - **Do not commit or push anything to GitHub** under any circumstances. Do not run `git commit`, `git push`, or any git command that writes to history. The user handles all commits manually.
 
+
+## Build Workflow for New Features
+- Never run `git commit` or `git push` under any circumstances, at any point in any phase.
+- Multi-phase features are built one phase at a time via /build-phase.
+- Each phase: plan → implement (subagent) → verify (subagent) → pause for human check.
+
 ## What this is
 
 **photo memory** is a fully local photo search and curation tool. It embeds a camera roll (50k+ photos) with CLIP and stores the vectors in ChromaDB, then lets you search the whole library by natural language ("golden hour sunset", "birthday with friends") or by dropping in a photo to find visually similar ones. Everything runs on the user's machine — no cloud accounts, no API keys, no external calls except the one-time CLIP model download. The longer-term goal is camera roll cleanup: duplicates, blurry/junk detection, bulk delete lists, trip albums, and eventually a video edit agent.

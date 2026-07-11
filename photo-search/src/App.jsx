@@ -4,6 +4,7 @@ import SyncButton from "./components/SyncButton";
 import SearchChips, { CHIPS } from "./components/SearchChips";
 import DeleteCounter from "./components/DeleteCounter";
 import { StatsProvider } from "./context/StatsContext";
+import GraphView from "./components/GraphView";
 
 const API = "http://localhost:5001";
 
@@ -214,6 +215,7 @@ export default function App() {
   const [resultCount, setResultCount] = useState(24); // how many results to fetch
   const [junkHunt, setJunkHunt] = useState(false); // viewing the merged junk queue?
   const [junkCount, setJunkCount] = useState(null); // result count for the button badge
+  const [resultView, setResultView] = useState("grid"); // "grid" | "graph"
   const fileRef = useRef();
   // Remembers how to re-run the last search, so toggling the count re-fetches it.
   const lastSearchRef = useRef(null);
@@ -604,20 +606,42 @@ export default function App() {
                   );
                 })}
               </div>
+              {!junkHunt && mode === "text" && (
+                <div style={{ display: "flex", gap: 2, background: "#141414", border: "1px solid #2a2a2a", borderRadius: 8, padding: 3 }}>
+                  {[["grid", "▦ Grid"], ["graph", "◉ Graph"]].map(([v, label]) => {
+                    const active = resultView === v;
+                    return (
+                      <button key={v} onClick={() => setResultView(v)}
+                        style={{
+                          padding: "5px 12px", borderRadius: 6, border: "none",
+                          background: active ? "rgba(129,140,248,0.15)" : "transparent",
+                          color: active ? "#818cf8" : "#666", fontSize: 12, fontWeight: active ? 700 : 500,
+                          cursor: "pointer", transition: "all 0.15s",
+                        }}>
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-              gap: 8,
-            }}>
-              {results.map((photo, i) => (
-                <PhotoCard
-                  key={`${photo.path}-${i}`}
-                  photo={photo}
-                  onClick={setSelectedPhoto}
-                />
-              ))}
-            </div>
+            {resultView === "graph" && !junkHunt && mode === "text" ? (
+              <GraphView query={query} onSelectPhoto={setSelectedPhoto} />
+            ) : (
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+                gap: 8,
+              }}>
+                {results.map((photo, i) => (
+                  <PhotoCard
+                    key={`${photo.path}-${i}`}
+                    photo={photo}
+                    onClick={setSelectedPhoto}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )}
 
