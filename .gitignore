@@ -11,3 +11,9 @@ __pycache__/
 
 # Claude Prompts and Information
 Claude/
+
+# Scratch review artifact written by the change-summarizer agent
+CHANGES_PENDING_REVIEW.md
+
+# Video Testing Stuff
+test-videos/

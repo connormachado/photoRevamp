@@ -9,3 +9,4 @@ pillow-heif
 umap-learn
 scikit-learn
 joblib
+imageio-ffmpeg

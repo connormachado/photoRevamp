@@ -1,0 +1,37 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────────
+# pre-commit: refuse commits that originate from an automated / agent context.
+#
+# Why: photoApp's rule (see CLAUDE.md) is that ALL commits are made manually by
+# Connor. This hook enforces that mechanically instead of relying on an LLM to
+# obey a prose instruction it might drift away from over a long session.
+#
+# How detection works: Claude Code auto-exports env markers (CLAUDECODE=1,
+# AI_AGENT=claude-code_..., CLAUDE_CODE_ENTRYPOINT) into EVERY Bash subprocess
+# it spawns. Connor's own Terminal/iTerm never has them, because a child process
+# cannot leak env vars back up to its parent shell. So their presence is a
+# reliable "an agent is driving this" signal with zero setup.
+#
+# Manual override: set CLAUDE_COMMIT_OK=1 to bypass (for the rare case Connor
+# wants to commit from inside a session via the `!` prefix).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 1. Explicit manual override always wins.
+[ "$CLAUDE_COMMIT_OK" = "1" ] && exit 0
+
+# 2. Block if any Claude Code / agent marker is present.
+if [ "$CLAUDECODE" = "1" ] || [ -n "$CLAUDE_CODE_ENTRYPOINT" ] || echo "$AI_AGENT" | grep -qi claude; then
+    echo "──────────────────────────────────────────────────────────" >&2
+    echo "🚫 Blocked: commits must be made manually by Connor, not by an agent." >&2
+    echo "" >&2
+    echo "   Detected a Claude Code / automated context via env markers" >&2
+    echo "   (CLAUDECODE / AI_AGENT / CLAUDE_CODE_ENTRYPOINT)." >&2
+    echo "" >&2
+    echo "   If this really is you committing by hand, re-run with:" >&2
+    echo "       CLAUDE_COMMIT_OK=1 git commit ..." >&2
+    echo "──────────────────────────────────────────────────────────" >&2
+    exit 1
+fi
+
+# 3. Normal manual commit from Connor's terminal — allow.
+exit 0

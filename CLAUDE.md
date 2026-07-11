@@ -6,6 +6,15 @@
 
 - **Do not commit or push anything to GitHub** under any circumstances. Do not run `git commit`, `git push`, or any git command that writes to history. The user handles all commits manually.
 
+### Enforced mechanically: agent-commit block (don't fight it)
+
+This rule is no longer just prose — it's enforced by git hooks so a drifting session can't quietly commit. **If you (an agent) try to `git commit` or `git push`, it will be refused. This is intended. Do not try to work around it.**
+
+- **Hooks:** `.githooks/pre-commit` and `.githooks/pre-push` (tracked in the repo; activated via `git config core.hooksPath .githooks`, which is set locally per clone).
+- **How they detect an agent:** Claude Code auto-exports env markers (`CLAUDECODE=1`, `AI_AGENT=claude-code_...`, `CLAUDE_CODE_ENTRYPOINT`) into every Bash subprocess it spawns. The hooks block when any of these is present and fail loudly with: `🚫 Blocked: commits must be made manually by Connor, not by an agent.` Connor's own Terminal/iTerm never carries these vars, so his manual commits pass untouched — no setup required.
+- **Connor's manual bypass:** if Connor ever needs to commit/push from inside a session (e.g. via the `!` prefix), prefix the command with `CLAUDE_COMMIT_OK=1` (e.g. `CLAUDE_COMMIT_OK=1 git commit ...`). This override is for Connor only; agents must not use it.
+- **After a build phase / long task:** the `change-summarizer` subagent (global, `~/.claude/agents/change-summarizer.md`) writes `CHANGES_PENDING_REVIEW.md` — a plain-language, file-by-file summary of the uncommitted changes for Connor to read before he commits. It's gitignored and never committed. `/build-phase` runs it automatically as its final step.
+
 
 ## Build Workflow for New Features
 - Never run `git commit` or `git push` under any circumstances, at any point in any phase.

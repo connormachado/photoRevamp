@@ -1,0 +1,26 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────────
+# pre-push: refuse pushes that originate from an automated / agent context.
+# Same detection + rationale as .githooks/pre-commit (see that file / CLAUDE.md).
+# Manual override: CLAUDE_COMMIT_OK=1 git push ...
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 1. Explicit manual override always wins.
+[ "$CLAUDE_COMMIT_OK" = "1" ] && exit 0
+
+# 2. Block if any Claude Code / agent marker is present.
+if [ "$CLAUDECODE" = "1" ] || [ -n "$CLAUDE_CODE_ENTRYPOINT" ] || echo "$AI_AGENT" | grep -qi claude; then
+    echo "──────────────────────────────────────────────────────────" >&2
+    echo "🚫 Blocked: pushes must be made manually by Connor, not by an agent." >&2
+    echo "" >&2
+    echo "   Detected a Claude Code / automated context via env markers" >&2
+    echo "   (CLAUDECODE / AI_AGENT / CLAUDE_CODE_ENTRYPOINT)." >&2
+    echo "" >&2
+    echo "   If this really is you pushing by hand, re-run with:" >&2
+    echo "       CLAUDE_COMMIT_OK=1 git push ..." >&2
+    echo "──────────────────────────────────────────────────────────" >&2
+    exit 1
+fi
+
+# 3. Normal manual push from Connor's terminal — allow.
+exit 0
