@@ -15,7 +15,9 @@ from pathlib import Path
 # stats.json lives at the repo root (one level up from backend/).
 STATS_PATH = Path(__file__).resolve().parent.parent / "stats.json"
 
-DEFAULTS = {"deleted": 0}
+# `deleted` = photos culled; `reclaimed_bytes` = video footage trimmed away
+# (kept here so both live in one place the UI reads via /stats).
+DEFAULTS = {"deleted": 0, "reclaimed_bytes": 0}
 
 
 def get_stats() -> dict:
@@ -30,14 +32,9 @@ def get_stats() -> dict:
     return {**DEFAULTS, **data}
 
 
-def update_stats(delta: int) -> dict:
-    """Add `delta` to the deleted count (floored at 0) and write it back
-    atomically. Returns the updated stats."""
-    stats = get_stats()
-    stats["deleted"] = max(0, stats["deleted"] + int(delta))
-
-    # Atomic write: dump to a temp file in the same dir, then rename over the
-    # target so a crash mid-write can't leave a half-written stats.json.
+def _write_stats(stats: dict) -> None:
+    """Atomic write: dump to a temp file in the same dir, then rename over the
+    target so a crash mid-write can't leave a half-written stats.json."""
     fd, tmp = tempfile.mkstemp(dir=STATS_PATH.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
@@ -47,4 +44,22 @@ def update_stats(delta: int) -> dict:
         os.path.exists(tmp) and os.remove(tmp)
         raise
 
+
+def update_stats(delta: int) -> dict:
+    """Add `delta` to the deleted count (floored at 0) and write it back
+    atomically. Returns the updated stats."""
+    stats = get_stats()
+    stats["deleted"] = max(0, stats["deleted"] + int(delta))
+    _write_stats(stats)
+    return stats
+
+
+def set_reclaimed_bytes(total: int) -> dict:
+    """Store the absolute total of reclaimed video bytes. Returns updated stats.
+
+    Absolute (not a delta) because the motion-review ledger recomputes the whole
+    total each time a verdict changes."""
+    stats = get_stats()
+    stats["reclaimed_bytes"] = max(0, int(total))
+    _write_stats(stats)
     return stats

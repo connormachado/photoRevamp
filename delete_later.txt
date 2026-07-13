@@ -1,0 +1,2 @@
+To add videos to the queue Climb Cutter feature
+python backend/video_motion.py --video <clip>

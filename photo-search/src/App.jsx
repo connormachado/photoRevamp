@@ -5,6 +5,7 @@ import SearchChips, { CHIPS } from "./components/SearchChips";
 import DeleteCounter from "./components/DeleteCounter";
 import { StatsProvider } from "./context/StatsContext";
 import GraphView from "./components/GraphView";
+import MotionReviewApp from "./components/motion-review/MotionReviewApp";
 
 const API = "http://localhost:5001";
 
@@ -216,6 +217,7 @@ export default function App() {
   const [junkHunt, setJunkHunt] = useState(false); // viewing the merged junk queue?
   const [junkCount, setJunkCount] = useState(null); // result count for the button badge
   const [resultView, setResultView] = useState("grid"); // "grid" | "graph"
+  const [room, setRoom] = useState("search"); // "search" | "motion" — full-screen room
   const fileRef = useRef();
   // Remembers how to re-run the last search, so toggling the count re-fetches it.
   const lastSearchRef = useRef(null);
@@ -358,6 +360,8 @@ export default function App() {
         input:focus { outline: none; }
       `}</style>
 
+      {room === "motion" && <MotionReviewApp onExit={() => setRoom("search")} />}
+
       <div style={{ minHeight: "100vh", padding: "40px 24px" }}>
         {/* Header */}
         <div style={{ maxWidth: 960, margin: "0 auto 40px" }}>
@@ -427,6 +431,22 @@ export default function App() {
                 }}
               >
                 🧹 Junk Hunt{junkHunt && junkCount != null ? ` (${junkCount} found)` : ""}
+              </button>
+              <button
+                onClick={() => setRoom("motion")}
+                style={{
+                  padding: "6px 14px",
+                  borderRadius: 6,
+                  border: "1px solid rgba(45,212,191,0.4)",
+                  background: "rgba(45,212,191,0.08)",
+                  color: "#2dd4bf",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  transition: "all 0.15s",
+                }}
+              >
+                🎬 Climb Cutter
               </button>
               <SyncButton />
             </div>

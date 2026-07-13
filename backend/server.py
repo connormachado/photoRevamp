@@ -26,6 +26,7 @@ import chromadb
 import search
 import graph_view
 import cleanup
+import motion_review
 import stats as stats_store
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
 from pathlib import Path
@@ -174,6 +175,66 @@ def cleanup_missing():
     """Prune ChromaDB entries whose files have been deleted from disk."""
     result = cleanup.remove_missing_photos(collection)
     return jsonify(result)
+
+
+# ── Climb Cutter: motion review room (Phase 2) ───────────────────────────────
+
+@app.route("/motion-review/queue")
+def motion_review_queue():
+    """List videos processed by video_motion.py that are awaiting/have review."""
+    return jsonify({"videos": motion_review.list_queue()})
+
+
+@app.route("/motion-review/source")
+def motion_review_source():
+    """Serve a browser-playable (h264) copy of the original source video.
+
+    send_file honors HTTP Range by default (conditional=True), which the
+    <video> element needs for seeking.
+    """
+    video_id = request.args.get("id", "")
+    if not video_id:
+        return jsonify({"error": "no id provided"}), 400
+    try:
+        path = motion_review.source_h264_path(video_id)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    return send_file(str(path), mimetype="video/mp4")
+
+
+@app.route("/motion-review/timelapse")
+def motion_review_timelapse():
+    """Serve the baked timelapse-of-removed-sections mp4 (fallback preview)."""
+    video_id = request.args.get("id", "")
+    path = motion_review.timelapse_path(video_id)
+    if not path:
+        return jsonify({"error": "no timelapse for this video"}), 404
+    return send_file(str(path), mimetype="video/mp4")
+
+
+@app.route("/motion-review/savings")
+def motion_review_savings():
+    """Return the running pool of reclaimed data across approved cuts."""
+    return jsonify(motion_review.get_savings())
+
+
+@app.route("/motion-review/decision", methods=["POST"])
+def motion_review_decision():
+    """Record a per-video verdict {"video_id", "verdict": "reject"|"approve"}."""
+    data = request.get_json() or {}
+    video_id = data.get("video_id", "")
+    verdict = data.get("verdict", "")
+    if not video_id:
+        return jsonify({"error": "no video_id provided"}), 400
+    try:
+        record = motion_review.record_decision(video_id, verdict)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(record)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
