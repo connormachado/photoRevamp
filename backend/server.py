@@ -226,10 +226,11 @@ def motion_review_decision():
     data = request.get_json() or {}
     video_id = data.get("video_id", "")
     verdict = data.get("verdict", "")
+    cut_segments = data.get("cut_segments")  # optional edited boundaries
     if not video_id:
         return jsonify({"error": "no video_id provided"}), 400
     try:
-        record = motion_review.record_decision(video_id, verdict)
+        record = motion_review.record_decision(video_id, verdict, cut_segments)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except FileNotFoundError as e:

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import VideoQueue from "./VideoQueue";
 import ReviewStage from "./ReviewStage";
 import VerdictButtons from "./VerdictButtons";
@@ -16,8 +16,10 @@ export default function MotionReviewApp({ onExit }) {
   const [videos, setVideos] = useState([]);
   const [selectedVideoId, setSelectedVideoId] = useState(null);
   const [savedBytes, setSavedBytes] = useState(0);
+  const [editedCuts, setEditedCuts] = useState([]); // live cut list for the selected video
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const lastVidRef = useRef(null);
 
   const loadQueue = useCallback(async () => {
     try {
@@ -42,13 +44,32 @@ export default function MotionReviewApp({ onExit }) {
 
   const selected = videos.find((v) => v.video_id === selectedVideoId) || null;
 
-  // After a verdict: badge the video, update the reclaimed pool, then jump to
-  // the next unreviewed video.
+  // Reset the editable cut list only when the SELECTED video changes (so live
+  // edits aren't clobbered by re-renders); seed it from that video's cuts.
+  useEffect(() => {
+    if (lastVidRef.current === selectedVideoId) return;
+    lastVidRef.current = selectedVideoId;
+    const v = videos.find((x) => x.video_id === selectedVideoId);
+    setEditedCuts(v ? (v.cut_segments || []) : []);
+  }, [selectedVideoId, videos]);
+
+  // After a verdict: badge the video, fold in any edited segments, update the
+  // reclaimed pool, then jump to the next unreviewed video.
   const handleDecided = useCallback((data) => {
     if (typeof data.savings_total_bytes === "number") setSavedBytes(data.savings_total_bytes);
     setVideos((prev) => {
       const next = prev.map((v) =>
-        v.video_id === selectedVideoId ? { ...v, verdict: data.verdict } : v
+        v.video_id === selectedVideoId
+          ? {
+              ...v,
+              verdict: data.verdict,
+              cut_segments: data.cut_segments || v.cut_segments,
+              keep_segments: data.keep_segments || v.keep_segments,
+              trimmed_duration: data.trimmed_duration ?? v.trimmed_duration,
+              estimated_saved_bytes: data.video_saved_bytes ?? v.estimated_saved_bytes,
+              edited: data.edited ?? v.edited,
+            }
+          : v
       );
       const nextUnreviewed = next.find((v) => v.verdict == null);
       if (nextUnreviewed) setSelectedVideoId(nextUnreviewed.video_id);
@@ -130,12 +151,13 @@ export default function MotionReviewApp({ onExit }) {
                     key={selectedVideoId}
                     videoId={selectedVideoId}
                     currentVerdict={selected.verdict}
+                    editedCuts={editedCuts}
                     onDecided={handleDecided}
                   />
                 </div>
               )}
             </div>
-            <ReviewStage key={selectedVideoId} video={selected} />
+            <ReviewStage key={selectedVideoId} video={selected} cuts={editedCuts} onCutsChange={setEditedCuts} />
           </>
         )}
       </div>

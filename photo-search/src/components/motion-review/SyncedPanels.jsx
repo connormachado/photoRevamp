@@ -55,10 +55,10 @@ const plainVideoStyle = { width: "100%", height: "100%", objectFit: "contain", b
  * are stored landscape + a rotation flag) fill the frame instead of shrinking.
  * `onTime` reports the currently-playing time up so the timeline playhead moves.
  */
-export default function SyncedPanels({ video, onTime }) {
+export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, keeps: keepsProp }) {
   const src = video.source_exists ? `${API}/motion-review/source?id=${video.video_id}` : null;
-  const cuts = video.cut_segments || [];
-  const keeps = video.keep_segments || [];
+  const cuts = cutsProp || video.cut_segments || [];
+  const keeps = keepsProp || video.keep_segments || [];
 
   // Start from the probe as a hint, then refine to the real measured aspect.
   const probeAspect = video.width && video.height ? video.width / video.height : 16 / 9;
@@ -74,6 +74,7 @@ export default function SyncedPanels({ video, onTime }) {
       <Panel label="Original" accent="#818cf8" aspect={aspect}>
         {src
           ? <video
+              ref={videoRef}
               src={src}
               controls
               preload="metadata"

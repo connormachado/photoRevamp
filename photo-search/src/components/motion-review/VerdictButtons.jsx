@@ -8,17 +8,20 @@ const API = "http://localhost:5001";
  * Posts the decision (audit log + resumable state + savings pool) then calls
  * onDecided so the room can badge the queue and advance to the next video.
  */
-export default function VerdictButtons({ videoId, currentVerdict, onDecided }) {
+export default function VerdictButtons({ videoId, currentVerdict, editedCuts, onDecided }) {
   const [saving, setSaving] = useState(null); // "reject" | "approve" | null
   const [pressed, setPressed] = useState(false);
 
   async function decide(verdict) {
     setSaving(verdict);
     try {
+      const body = { video_id: videoId, verdict };
+      // Only approve carries the (possibly edited) cut boundaries.
+      if (verdict === "approve" && editedCuts) body.cut_segments = editedCuts;
       const res = await fetch(`${API}/motion-review/decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ video_id: videoId, verdict }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (res.ok) onDecided(data);

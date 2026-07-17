@@ -65,24 +65,63 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _estimated_saved_bytes(prop: dict) -> int:
-    """Estimate bytes reclaimed if this video's cuts are applied.
+def _saved_bytes(size_bytes: int, original_duration: float, trimmed_duration: float) -> int:
+    """Bytes reclaimed: source size × fraction of duration removed."""
+    if not size_bytes or not original_duration or original_duration <= 0:
+        return 0
+    frac = max(0.0, 1.0 - (trimmed_duration or 0) / original_duration)
+    return int(size_bytes * frac)
 
-    Proportional model: source file size × fraction of duration removed. Good
-    enough for a running tally without re-encoding to measure exactly.
-    """
+
+def _estimated_saved_bytes(prop: dict) -> int:
+    """Proportional estimate of bytes reclaimed for a proposal's own cuts."""
     sp = prop.get("source_path", "")
     if not sp or not os.path.exists(sp):
         return 0
-    orig = prop.get("original_duration") or 0
-    trimmed = prop.get("trimmed_duration") or 0
-    if orig <= 0:
-        return 0
-    frac = max(0.0, 1.0 - trimmed / orig)
     try:
-        return int(os.path.getsize(sp) * frac)
+        size = os.path.getsize(sp)
     except OSError:
         return 0
+    return _saved_bytes(size, prop.get("original_duration") or 0, prop.get("trimmed_duration") or 0)
+
+
+def _sanitize_cuts(cuts: list, duration: float) -> list:
+    """Clamp to [0, duration], drop empties, sort, and merge overlaps.
+
+    The frontend already constrains drags, but the backend is authoritative — a
+    malformed POST can't produce garbage cut/keep segments."""
+    cleaned = []
+    for seg in cuts or []:
+        try:
+            s = max(0.0, float(seg["start"]))
+            e = min(float(duration), float(seg["end"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if e - s > 1e-3:
+            cleaned.append((s, e))
+    cleaned.sort()
+    merged = []
+    for s, e in cleaned:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return [{"start": round(s, 3), "end": round(e, 3)} for s, e in merged]
+
+
+def _complement_segments(cuts: list, duration: float) -> list:
+    """Keep segments = the gaps between cuts over [0, duration]."""
+    keeps = []
+    cursor = 0.0
+    for seg in sorted(cuts or [], key=lambda s: s["start"]):
+        s = max(0.0, float(seg["start"]))
+        e = min(float(duration), float(seg["end"]))
+        if s > cursor + 1e-3:
+            keeps.append({"start": round(cursor, 3), "end": round(s, 3)})
+        cursor = max(cursor, e)
+    if cursor < duration - 1e-3:
+        keeps.append({"start": round(cursor, 3), "end": round(float(duration), 3)})
+    return keeps
 
 
 # ── Verdict state ─────────────────────────────────────────────────────────────
@@ -119,23 +158,41 @@ def list_queue() -> list[dict]:
         artifacts = prop.get("artifacts") or {}
         timelapse = artifacts.get("timelapse")
         probe = prop.get("probe") or {}
+        orig_dur = prop.get("original_duration", 0)
+        proposed_cuts = prop.get("cut_segments", [])
+
+        # If the video was reviewed WITH edited cuts, surface those so a reload
+        # resumes with the user's edits. Proposals on disk are never mutated.
+        if review.get("cut_segments") is not None:
+            cut_segments = review["cut_segments"]
+            keep_segments = review.get("keep_segments") or _complement_segments(cut_segments, orig_dur)
+            trimmed_duration = review.get("trimmed_duration", prop.get("trimmed_duration", 0))
+        else:
+            cut_segments = proposed_cuts
+            keep_segments = prop.get("keep_segments", [])
+            trimmed_duration = prop.get("trimmed_duration", 0)
+
+        size_bytes = os.path.getsize(source_path) if source_exists else 0
 
         videos.append({
             "video_id": video_id,
             "apple_uuid": prop.get("apple_uuid", ""),
             "source_name": os.path.basename(source_path) if source_path else video_id,
             "source_exists": source_exists,
-            "original_duration": prop.get("original_duration", 0),
-            "trimmed_duration": prop.get("trimmed_duration", 0),
-            "cut_segments": prop.get("cut_segments", []),
-            "keep_segments": prop.get("keep_segments", []),
-            "num_cuts": len(prop.get("cut_segments", [])),
+            "original_duration": orig_dur,
+            "trimmed_duration": trimmed_duration,
+            "cut_segments": cut_segments,
+            "keep_segments": keep_segments,
+            "proposed_cut_segments": proposed_cuts,
+            "num_cuts": len(cut_segments),
             "has_timelapse": bool(timelapse) and os.path.exists(timelapse),
             "width": probe.get("width", 0),
             "height": probe.get("height", 0),
-            "source_size_bytes": (os.path.getsize(source_path) if source_exists else 0),
-            "estimated_saved_bytes": _estimated_saved_bytes(prop),
+            "fps": probe.get("fps", 0),
+            "source_size_bytes": size_bytes,
+            "estimated_saved_bytes": _saved_bytes(size_bytes, orig_dur, trimmed_duration),
             "verdict": review.get("verdict"),
+            "edited": bool(review.get("edited")),
             "reviewed_at": review.get("reviewed_at"),
             "created": prop.get("created", ""),
         })
@@ -237,12 +294,13 @@ def _apply_savings(video_id: str, verdict: str, saved_bytes: int) -> int:
 
 # ── Decision recording ────────────────────────────────────────────────────────
 
-def record_decision(video_id: str, verdict: str) -> dict:
-    """Record a per-video verdict.
+def record_decision(video_id: str, verdict: str, cut_segments: list | None = None) -> dict:
+    """Record a per-video verdict, optionally with edited cut boundaries.
 
-    Writes two things: an append-only audit line in decisions.jsonl (rich, for
-    Phase 3 stats) and reviews/<video_id>.json (latest state, for queue badges /
-    resume). Returns the saved review record.
+    On approve, if `cut_segments` is provided the backend sanitizes them and
+    recomputes keep_segments / trimmed_duration / saved bytes authoritatively —
+    the frontend's numbers are only a preview. Writes an append-only audit line
+    (decisions.jsonl) and reviews/<video_id>.json (latest state, for resume).
     """
     if verdict not in VALID_VERDICTS:
         raise ValueError(f"invalid verdict: {verdict!r}")
@@ -252,7 +310,23 @@ def record_decision(video_id: str, verdict: str) -> dict:
         raise FileNotFoundError(f"no proposal for {video_id}")
 
     ts = _now_iso()
-    saved_bytes = _estimated_saved_bytes(prop)
+    orig_dur = prop.get("original_duration", 0)
+    sp = prop.get("source_path", "")
+    size_bytes = os.path.getsize(sp) if sp and os.path.exists(sp) else 0
+
+    # Edited cuts only meaningfully apply to an approval ("apply these cuts").
+    if verdict == "approve" and cut_segments is not None:
+        cuts = _sanitize_cuts(cut_segments, orig_dur)
+        keeps = _complement_segments(cuts, orig_dur)
+        trimmed_duration = round(sum(k["end"] - k["start"] for k in keeps), 3)
+        edited = cuts != _sanitize_cuts(prop.get("cut_segments", []), orig_dur)
+    else:
+        cuts = prop.get("cut_segments", [])
+        keeps = prop.get("keep_segments", [])
+        trimmed_duration = prop.get("trimmed_duration", 0)
+        edited = False
+
+    saved_bytes = _saved_bytes(size_bytes, orig_dur, trimmed_duration)
 
     # 1) Append-only audit log (one JSON object per line).
     audit = {
@@ -260,10 +334,11 @@ def record_decision(video_id: str, verdict: str) -> dict:
         "video_id": video_id,
         "apple_uuid": prop.get("apple_uuid", ""),
         "verdict": verdict,
-        "original_duration": prop.get("original_duration", 0),
-        "trimmed_duration": prop.get("trimmed_duration", 0),
+        "original_duration": orig_dur,
+        "trimmed_duration": trimmed_duration,
         "estimated_saved_bytes": saved_bytes,
-        "cut_segments": prop.get("cut_segments", []),
+        "edited": edited,
+        "cut_segments": cuts,
     }
     DECISIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(DECISIONS_LOG, "a") as f:
@@ -272,8 +347,16 @@ def record_decision(video_id: str, verdict: str) -> dict:
     # 2) Update the global reclaimed-data pool (approve adds, reject removes).
     total_saved = _apply_savings(video_id, verdict, saved_bytes)
 
-    # 3) Current state (overwrite) for the UI to reload.
-    review = {"video_id": video_id, "verdict": verdict, "reviewed_at": ts}
+    # 3) Current state (overwrite) for the UI to reload/resume with edits.
+    review = {
+        "video_id": video_id,
+        "verdict": verdict,
+        "reviewed_at": ts,
+        "cut_segments": cuts,
+        "keep_segments": keeps,
+        "trimmed_duration": trimmed_duration,
+        "edited": edited,
+    }
     _atomic_write_json(_review_path(video_id), review)
     return {
         **review,
