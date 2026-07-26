@@ -1,8 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import SyncedPanels from "./SyncedPanels";
 import CutTimeline from "./CutTimeline";
+import BoundaryToolbar from "./BoundaryToolbar";
+import SaveIcon from "./SaveIcon";
 import { fmtDur, formatBytes } from "./format";
-import { complementSegments, sumDurations, segmentsEqual } from "./segments";
+import { complementSegments } from "./segments";
+import {
+  regionsToCuts, regionsEqual, outputDuration, addRegionAt, removeRegion, regionsFromCuts,
+} from "./regions";
+import { DEFAULT_TYPE_ID } from "./boundaryTypes";
 
 const ACCENT = "#2dd4bf";
 
@@ -42,21 +48,68 @@ function DurationSummary({ original, trimmed, savedBytes }) {
   );
 }
 
-export default function ReviewStage({ video, cuts, onCutsChange }) {
+// Square save button standing to the left of the title block, sized to span both
+// the title line and the stats line beneath it. Fires the same export as the
+// green dome in the left rail.
+function HeaderSaveButton({ onExport, exporting, saved }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onExport}
+      disabled={exporting}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="Save — export the trimmed clip into Photos at the original's date"
+      style={{
+        width: 52,
+        height: 52,          // ≈ the combined height of the title + stats rows
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 10,
+        border: `1px solid ${saved ? "#22c55e66" : ACCENT + "55"}`,
+        background: exporting
+          ? "rgba(45,212,191,0.05)"
+          : hover
+            ? "rgba(45,212,191,0.16)"
+            : "rgba(45,212,191,0.08)",
+        color: saved ? "#22c55e" : ACCENT,
+        cursor: exporting ? "default" : "pointer",
+        transition: "background 0.12s",
+      }}
+    >
+      {exporting
+        ? <span style={{ fontSize: 11, color: ACCENT }}>…</span>
+        : <SaveIcon size={24} />}
+    </button>
+  );
+}
+
+export default function ReviewStage({ video, regions, onRegionsChange, onExport, exporting }) {
   const [playhead, setPlayhead] = useState(0);
+  const [activeTypeId, setActiveTypeId] = useState(DEFAULT_TYPE_ID);
+  const [selectedId, setSelectedId] = useState(null);
   const originalRef = useRef(null);      // the Original panel's <video>, for seeking
   const playheadRef = useRef(0);         // mirror of playhead for the keydown closure
 
   const duration = video ? video.original_duration || 0 : 0;
   const fps = video && video.fps ? video.fps : 30;
 
-  // Live-derived from the (editable) cut list, so drags update instantly.
-  const keeps = complementSegments(cuts || [], duration);
-  const trimmedDuration = Math.max(0, duration - sumDurations(cuts || []));
+  // Live-derived from the (editable) region list, so drags update instantly.
+  // Regions are the source of truth; cuts/keeps are what the preview panels and
+  // the savings estimate still speak — same derivation the backend runs.
+  const cuts = regionsToCuts(regions || []);
+  const keeps = complementSegments(cuts, duration);
+  const trimmedDuration = outputDuration(regions || [], duration);
   const savedBytes = duration > 0 && video && video.source_size_bytes
     ? Math.round(video.source_size_bytes * (1 - trimmedDuration / duration))
     : 0;
-  const isEdited = video ? !segmentsEqual(cuts, video.proposed_cut_segments || video.cut_segments) : false;
+  const proposedRegions = video
+    ? (video.proposed_regions || regionsFromCuts(video.proposed_cut_segments || []))
+    : [];
+  const isEdited = video ? !regionsEqual(regions, proposedRegions) : false;
+  const selected = (regions || []).find((r) => r.id === selectedId) || null;
 
   // Playback updates the playhead; scrub/step both update it AND move the video.
   const setPlay = useCallback((t) => {
@@ -77,19 +130,52 @@ export default function ReviewStage({ video, cuts, onCutsChange }) {
     setPlay(clamped);
   }, [duration, setPlay]);
 
-  // Arrow keys step frames: ←/→ = ∓1 frame, Shift+←/→ = ∓10 frames.
+  // Drop a boundary of the ACTIVE type at the playhead. If the playhead already
+  // sits inside one, select that instead of stacking a second on top of it.
+  const addAtPlayhead = useCallback(() => {
+    const t = playheadRef.current;
+    const inside = (regions || []).find((r) => t >= r.start && t <= r.end);
+    if (inside) { setSelectedId(inside.id); return; }
+    const next = addRegionAt(regions || [], activeTypeId, t, duration, fps);
+    if (!next) return; // no room in this gap
+    const added = next.find((r) => !(regions || []).some((p) => p.id === r.id));
+    onRegionsChange(next);
+    setSelectedId(added ? added.id : null);
+  }, [regions, activeTypeId, duration, fps, onRegionsChange]);
+
+  const removeSelected = useCallback(() => {
+    if (!selectedId) return;
+    onRegionsChange(removeRegion(regions || [], selectedId));
+    setSelectedId(null);
+  }, [regions, selectedId, onRegionsChange]);
+
+  // Keyboard: ←/→ step ∓1 frame (shift = ∓10), c adds a boundary at the
+  // playhead, delete removes the selected one, escape deselects. Guarded on the
+  // event target so typing in a field never triggers an edit.
   useEffect(() => {
     if (!video || !video.source_exists) return;
     function onKey(e) {
-      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-      e.preventDefault(); // don't scroll the page
-      const frames = e.shiftKey ? 10 : 1;
-      const step = frames / fps;
-      seek(playheadRef.current + (e.key === "ArrowRight" ? step : -step));
+      const el = e.target;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault(); // don't scroll the page
+        const frames = e.shiftKey ? 10 : 1;
+        const step = frames / fps;
+        seek(playheadRef.current + (e.key === "ArrowRight" ? step : -step));
+      } else if (e.key === "c" || e.key === "C") {
+        e.preventDefault();
+        addAtPlayhead();
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (!selectedId) return;
+        e.preventDefault(); // don't let Backspace navigate back
+        removeSelected();
+      } else if (e.key === "Escape") {
+        setSelectedId(null);
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [video, fps, seek]);
+  }, [video, fps, seek, addAtPlayhead, removeSelected, selectedId]);
 
   if (!video) {
     return (
@@ -103,9 +189,27 @@ export default function ReviewStage({ video, cuts, onCutsChange }) {
     <div style={{ flex: 1, padding: "24px 32px", overflowY: "auto", background: "#0d3d37" }}>
       {/* Header: filename + before/after + savings */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 600, color: "#e5e5e5" }}>{video.source_name}</div>
-          <div style={{ fontSize: 12, color: "#666", fontFamily: "monospace" }}>{video.video_id}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <HeaderSaveButton
+            onExport={onExport}
+            exporting={exporting}
+            saved={Boolean(video.exported_at)}
+          />
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: "#e5e5e5" }}>{video.source_name}</div>
+            {/* Replaces the old video_id hash — that was internal plumbing (an MD5
+                of the source path) and meant nothing on screen. */}
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12 }}>
+              <span style={{ color: "#e5e5e5", fontFamily: "monospace", fontWeight: 600 }}>
+                {formatBytes(video.source_size_bytes || 0)}
+              </span>
+              <span style={{ color: "#3f6f66" }}>:</span>
+              {/* Placeholder for a future dynamically-populated comparison. */}
+              <span style={{ color: "#5f8b83", fontStyle: "italic" }}>
+                your video is ~x times that of y
+              </span>
+            </div>
+          </div>
         </div>
         <DurationSummary
           original={duration}
@@ -119,14 +223,24 @@ export default function ReviewStage({ video, cuts, onCutsChange }) {
 
       {/* Scrub + edit timeline + frame readout */}
       <div style={{ marginTop: 24 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-          <span style={{ fontSize: 11, color: "#5eead4aa", letterSpacing: "0.05em" }}>
-            hover to scrub · ←/→ step 1 frame · shift+←/→ step 10 · drag red edges to trim
-          </span>
+        <div style={{ fontSize: 11, color: "#5eead4aa", letterSpacing: "0.05em", marginBottom: 6 }}>
+          hover to scrub · ←/→ step 1 frame · shift+←/→ step 10 · drag edges to trim · click a block then delete to remove
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, gap: 16, flexWrap: "wrap" }}>
+          <BoundaryToolbar
+            activeTypeId={activeTypeId}
+            onSelectType={setActiveTypeId}
+            onAdd={addAtPlayhead}
+            selected={selected}
+            onRemove={removeSelected}
+          />
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {isEdited && (
               <button
-                onClick={() => onCutsChange(video.proposed_cut_segments || [])}
+                onClick={() => {
+                  setSelectedId(null);
+                  onRegionsChange(proposedRegions);
+                }}
                 style={{
                   padding: "3px 10px",
                   borderRadius: 6,
@@ -148,11 +262,13 @@ export default function ReviewStage({ video, cuts, onCutsChange }) {
         </div>
         <CutTimeline
           duration={duration}
-          cutSegments={cuts}
+          regions={regions}
           fps={fps}
           playhead={playhead}
           onSeek={seek}
-          onCutsChange={onCutsChange}
+          onRegionsChange={onRegionsChange}
+          selectedId={selectedId}
+          onSelectRegion={setSelectedId}
         />
       </div>
     </div>

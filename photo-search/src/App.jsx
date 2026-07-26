@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import OpenInPhotosButton from "./components/OpenInPhotosButton";
 import SyncButton from "./components/SyncButton";
+import EmbedButton from "./components/EmbedButton";
 import SearchChips, { CHIPS } from "./components/SearchChips";
 import DeleteCounter from "./components/DeleteCounter";
 import { StatsProvider } from "./context/StatsContext";
@@ -230,6 +231,13 @@ export default function App() {
       .catch(() => {});
   });
 
+  // Refresh the header's "N photos indexed" after an embed run. useCallback keeps
+  // this function identity stable across renders, so the effect in EmbedButton
+  // that depends on it doesn't re-fire on every render.
+  const handleEmbedFinished = useCallback((total) => {
+    setStats(prev => ({ ...(prev || {}), total }));
+  }, []);
+
   const searchByText = useCallback(async (q, n = 24) => {
     if (!q.trim()) return;
     setJunkHunt(false); // any direct search exits the junk queue
@@ -448,6 +456,7 @@ export default function App() {
               >
                 🎬 Climb Cutter
               </button>
+              <EmbedButton onFinished={handleEmbedFinished} />
               <SyncButton />
             </div>
           </div>

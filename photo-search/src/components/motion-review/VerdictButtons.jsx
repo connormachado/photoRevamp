@@ -1,105 +1,166 @@
 import { useState } from "react";
+import SaveIcon from "./SaveIcon";
 
 const API = "http://localhost:5001";
 
 /**
- * The per-video verdict, styled as a big comic/silo REJECT button with a small
- * green approve circle beneath it. Lives at the bottom of the left rail.
- * Posts the decision (audit log + resumable state + savings pool) then calls
- * onDecided so the room can badge the queue and advance to the next video.
+ * The per-video decision pair, at the bottom of the left rail: a red REJECT dome
+ * and an equal-sized green SAVE dome, side by side.
+ *
+ * The two are NOT symmetric in what they do. Reject is bookkeeping — it posts to
+ * /motion-review/decision and records that the proposed cuts were thrown away.
+ * Save is the real action: it renders the kept footage, imports it into Photos
+ * at the original's date, and reveals it there. Saving *is* approving, so there
+ * is no separate approve button.
+ *
+ * The render/import round-trip takes several seconds, so the green dome owns a
+ * visible working state; the actual fetch lives in MotionReviewApp because the
+ * header save icon fires the same export.
  */
-export default function VerdictButtons({ videoId, currentVerdict, editedCuts, onDecided }) {
-  const [saving, setSaving] = useState(null); // "reject" | "approve" | null
-  const [pressed, setPressed] = useState(false);
+export default function VerdictButtons({
+  videoId,
+  currentVerdict,
+  exportedAt,
+  onDecided,
+  onExport,
+  exporting,
+  exportResult,
+}) {
+  const [rejecting, setRejecting] = useState(false);
+  const [pressed, setPressed] = useState(null); // "reject" | "save" | null
 
-  async function decide(verdict) {
-    setSaving(verdict);
+  async function reject() {
+    setRejecting(true);
     try {
-      const body = { video_id: videoId, verdict };
-      // Only approve carries the (possibly edited) cut boundaries.
-      if (verdict === "approve" && editedCuts) body.cut_segments = editedCuts;
       const res = await fetch(`${API}/motion-review/decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ video_id: videoId, verdict: "reject" }),
       });
       const data = await res.json();
       if (res.ok) onDecided(data);
     } catch {
       /* leave UI as-is on failure */
     } finally {
-      setSaving(null);
+      setRejecting(false);
     }
   }
 
+  const busy = rejecting || exporting;
   const isReject = currentVerdict === "reject";
-  const isApprove = currentVerdict === "approve";
+  const isSaved = Boolean(exportedAt);
+
+  // Both domes are the same size. At 118px a pair plus the gap fits the 280px
+  // rail with room for its padding.
+  const DOME = 118;
+
+  const domeShadow = (rgb, isPressed) =>
+    isPressed
+      ? `inset 0 6px 14px rgba(0,0,0,0.5), 0 0 0 8px rgba(${rgb},0.10)`
+      : `0 10px 22px rgba(${rgb},0.45), inset 0 3px 6px rgba(255,255,255,0.35), ` +
+        `inset 0 -8px 16px rgba(0,0,0,0.35), 0 0 0 8px rgba(${rgb},0.12)`;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 18, padding: "22px 0 26px" }}>
-      {/* BIG red silo button */}
-      <button
-        onClick={() => decide("reject")}
-        onMouseDown={() => setPressed(true)}
-        onMouseUp={() => setPressed(false)}
-        onMouseLeave={() => setPressed(false)}
-        disabled={saving !== null}
-        title="Reject — throw away the proposed cuts"
-        style={{
-          width: 150,
-          height: 150,
-          borderRadius: "50%",
-          border: "none",
-          cursor: saving ? "default" : "pointer",
-          color: "#fff",
-          fontSize: 19,
-          fontWeight: 900,
-          letterSpacing: "0.06em",
-          // domed, backlit "big red button" look
-          background: "radial-gradient(circle at 38% 30%, #ff6b6b 0%, #ef4444 42%, #b91c1c 100%)",
-          boxShadow: pressed
-            ? "inset 0 6px 14px rgba(0,0,0,0.5), 0 0 0 10px rgba(239,68,68,0.10)"
-            : "0 12px 26px rgba(239,68,68,0.45), inset 0 3px 6px rgba(255,255,255,0.35), inset 0 -8px 16px rgba(0,0,0,0.35), 0 0 0 10px rgba(239,68,68,0.12)",
-          outline: isReject ? "3px solid #fecaca" : "none",
-          outlineOffset: 4,
-          transform: pressed ? "translateY(2px) scale(0.98)" : "none",
-          transition: "all 0.08s",
-          opacity: saving === "approve" ? 0.5 : 1,
-        }}
-      >
-        {saving === "reject" ? "…" : "REJECT"}
-      </button>
+    <div style={{ padding: "20px 12px 22px" }}>
+      <div style={{ display: "flex", justifyContent: "center", gap: 16 }}>
+        {/* REJECT — discard the proposed cuts */}
+        <button
+          onClick={reject}
+          onMouseDown={() => setPressed("reject")}
+          onMouseUp={() => setPressed(null)}
+          onMouseLeave={() => setPressed(null)}
+          disabled={busy}
+          title="Reject — throw away the proposed cuts"
+          style={{
+            width: DOME,
+            height: DOME,
+            borderRadius: "50%",
+            border: "none",
+            cursor: busy ? "default" : "pointer",
+            color: "#fff",
+            fontSize: 15,
+            fontWeight: 900,
+            letterSpacing: "0.06em",
+            background: "radial-gradient(circle at 38% 30%, #ff6b6b 0%, #ef4444 42%, #b91c1c 100%)",
+            boxShadow: domeShadow("239,68,68", pressed === "reject"),
+            outline: isReject ? "3px solid #fecaca" : "none",
+            outlineOffset: 4,
+            transform: pressed === "reject" ? "translateY(2px) scale(0.98)" : "none",
+            transition: "all 0.08s",
+            opacity: exporting ? 0.5 : 1,
+          }}
+        >
+          {rejecting ? "…" : "REJECT"}
+        </button>
 
-      {/* small green approve circle */}
-      <button
-        onClick={() => decide("approve")}
-        disabled={saving !== null}
-        title="Approve — accept the trim"
-        style={{
-          width: 62,
-          height: 62,
-          borderRadius: "50%",
-          border: "none",
-          cursor: saving ? "default" : "pointer",
-          color: "#fff",
-          fontSize: 22,
-          fontWeight: 800,
-          background: "radial-gradient(circle at 38% 30%, #4ade80 0%, #22c55e 45%, #15803d 100%)",
-          boxShadow: "0 6px 14px rgba(34,197,94,0.4), inset 0 2px 4px rgba(255,255,255,0.4), inset 0 -5px 10px rgba(0,0,0,0.3)",
-          outline: isApprove ? "3px solid #bbf7d0" : "none",
-          outlineOffset: 3,
-          opacity: saving === "reject" ? 0.5 : 1,
-          transition: "all 0.08s",
-        }}
-      >
-        {saving === "approve" ? "…" : "✓"}
-      </button>
+        {/* SAVE — render + import into Photos + reveal */}
+        <button
+          onClick={onExport}
+          onMouseDown={() => setPressed("save")}
+          onMouseUp={() => setPressed(null)}
+          onMouseLeave={() => setPressed(null)}
+          disabled={busy}
+          title="Save — export the trimmed clip into Photos at the original's date"
+          style={{
+            width: DOME,
+            height: DOME,
+            borderRadius: "50%",
+            border: "none",
+            cursor: busy ? "default" : "pointer",
+            color: "#fff",
+            fontSize: 15,
+            fontWeight: 900,
+            letterSpacing: "0.06em",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 5,
+            background: "radial-gradient(circle at 38% 30%, #4ade80 0%, #22c55e 45%, #15803d 100%)",
+            boxShadow: domeShadow("34,197,94", pressed === "save"),
+            outline: isSaved ? "3px solid #bbf7d0" : "none",
+            outlineOffset: 4,
+            transform: pressed === "save" ? "translateY(2px) scale(0.98)" : "none",
+            transition: "all 0.08s",
+            opacity: rejecting ? 0.5 : 1,
+          }}
+        >
+          {exporting ? (
+            <span style={{ fontSize: 13, fontWeight: 700 }}>saving…</span>
+          ) : (
+            <>
+              <SaveIcon size={26} color="#fff" />
+              <span>SAVE</span>
+            </>
+          )}
+        </button>
+      </div>
 
-      {currentVerdict && (
-        <span style={{ color: isApprove ? "#22c55e" : "#f87171", fontSize: 11, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-          {isApprove ? "approved" : "rejected"}
-        </span>
-      )}
+      {/* Status line: export outcome wins, otherwise the recorded verdict. */}
+      <div style={{ marginTop: 14, minHeight: 30, textAlign: "center", padding: "0 4px" }}>
+        {exporting ? (
+          <span style={{ color: "#5eead4", fontSize: 11, lineHeight: 1.5 }}>
+            rendering &amp; importing — this takes a few seconds…
+          </span>
+        ) : exportResult ? (
+          <span style={{
+            color: exportResult.ok ? "#22c55e" : "#f87171",
+            fontSize: 11,
+            fontWeight: 600,
+            lineHeight: 1.5,
+          }}>
+            {exportResult.message}
+          </span>
+        ) : isReject ? (
+          <span style={{ color: "#f87171", fontSize: 11, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+            rejected
+          </span>
+        ) : isSaved ? (
+          <span style={{ color: "#22c55e", fontSize: 11, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+            saved to photos
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

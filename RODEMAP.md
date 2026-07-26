@@ -3,6 +3,14 @@
 A personal photo search + curation tool built on CLIP embeddings + ChromaDB.
 The goal: make 50,000 photos actually useful, searchable, and worth keeping.
 
+Long-term this is a private, intelligent **home base for media** — not a replacement
+for specialized editors. Editing is *assistive* (the tool proposes, you approve),
+never a manual timeline you have to operate yourself.
+
+> Status doc, not a wish list. `✅` means it exists on `main` and runs. Everything
+> else is unbuilt — don't assume a file exists because it's described here.
+> For how the built parts are wired, see `CLAUDE.md`.
+
 ---
 
 ## current stack
@@ -11,106 +19,204 @@ The goal: make 50,000 photos actually useful, searchable, and worth keeping.
 |---|---|
 | embeddings | CLIP ViT-B/32 via `open_clip` |
 | vector DB | ChromaDB (local, no account needed) |
-| backend | Flask + Python |
-| frontend | React + Vite |
+| layout | UMAP (2-D projection) + sklearn Agglomerative clustering |
+| video | ffmpeg via `imageio-ffmpeg`, pixel-diff motion detection |
+| backend | Flask + Python, port 5001 |
+| frontend | React + Vite, port 5173 |
+| device | Apple Silicon Mac (torch device = `mps`) |
+
+Library is ~49.6k photos indexed. Indexing targets the Photos **derivatives** cache
+so it stays compatible with iCloud "Optimize Storage"; `apple_uuid` is stored in
+ChromaDB metadata so AppleScript operations can find the real asset.
 
 ---
 
-## repo structure (recommended)
+## repo structure
 
-Keep features modular so Claude Code can drop in new ones without touching unrelated code.
+The principle holds: **each backend feature is its own file**, **each frontend view is
+its own component**, and `server.py` stays thin — it just wires routes to the right
+module. That way a feature can be worked on without touching unrelated code.
 
-```
-photoApp/
-├── photo_db/               # ChromaDB data (gitignore this)
-├── test_photos/            # Small test set
-│
-├── backend/
-│   ├── embed_photos.py     # Indexing pipeline
-│   ├── server.py           # Flask API (routes only, thin layer)
-│   ├── search.py           # Search logic (text, image, similar)
-│   ├── duplicates.py       # Duplicate detection logic
-│   ├── clustering.py       # Timeline + face + event clustering
-│   ├── cleanup.py          # Deletion list export, reveal in Finder
-│   └── utils.py            # Shared helpers (EXIF, file ID, etc.)
-│
-├── photo-search/           # Vite/React frontend
-│   └── src/
-│       ├── App.jsx
-│       ├── components/
-│       │   ├── SearchBar.jsx
-│       │   ├── PhotoGrid.jsx
-│       │   ├── PhotoModal.jsx
-│       │   ├── DuplicateReview.jsx   # side-by-side keep/delete UI
-│       │   ├── TimelineView.jsx
-│       │   └── MoodBoard.jsx
-│       └── hooks/
-│           ├── useSearch.js
-│           └── useSelection.js       # bulk select state
-│
-└── RODEMAP.md
-```
-
-The key principle: **each backend feature is its own file**, and **each frontend view is its own component**. `server.py` stays thin — it just wires routes to the right module. That way Claude Code can work on `duplicates.py` without ever touching `search.py`.
+For the current actual tree, see `CLAUDE.md` — it's kept in sync with the repo.
+Files named in this doc that don't appear there (`duplicates.py`, `clustering.py`,
+`DuplicateReview.jsx`, `TimelineView.jsx`, `MoodBoard.jsx`) are **planned, not built**.
 
 ---
 
 ## features
 
 ### ✅ shipped
-- **Natural language search** — type "golden hour sunset" and find every matching photo across your entire library. CLIP translates text and images into the same coordinate space, so no tagging required.
+
+- **Natural language search** — type "golden hour sunset" and find every matching photo
+  across the library. CLIP puts text and images in the same coordinate space, so no
+  tagging required.
+- **Image-drop search** — drop a photo in, get visually similar shots back.
+- **Junk Hunt** — the "find my worst photos" idea, shipped. Six preset junk queries
+  (accidental, dark, blurry, screenshot, receipt, duplicate scene) fire in parallel and
+  merge into one deduped cull queue.
+- **Search chips** — one-tap versions of those same six queries for normal searching.
+- **Show in Photos** — reveals the exact asset in Photos.app. Note this ended up
+  *different from the original "reveal in Finder" plan*: photos are indexed from the
+  derivatives cache, whose paths Photos.app doesn't recognize, so it reveals by
+  `apple_uuid` via AppleScript `spotlight media item id` instead of `open -R`.
+  ⚠️ Intermittently activates Photos.app without landing on the exact photo — unfixed.
+- **Delete counter + bulk add pad** — tracks how many photos you've culled, persisted to
+  `stats.json`. The number pad logs a batch at once ("I just cleared 23 in Photos").
+  This is a *counter*, not a delete-list export — see below for that.
+- **Sync / prune** — drops ChromaDB rows whose files no longer exist on disk, so photos
+  deleted in Photos.app stop showing up in search.
+- **Update Library button** — in-app trigger for incremental indexing, so routine catch-up
+  no longer needs the terminal. `embed_job.py` spawns `embed_photos.py` as a background
+  subprocess (keeping CLIP out of the Flask process), writes progress to
+  `photo_db/embed_status.json`, and refuses to start a second run while one is going. The
+  UI polls `/api/embed/status` for a live done/total bar. Add-only — never wipes or
+  re-embeds existing photos.
+- **Results count toggle** — 12 / 24 / 48 / All.
+- **HEIC → JPEG on the fly** — Chrome refuses to render HEIC natively; the `/full`
+  endpoint converts in memory.
 
 ---
 
-### 🔜 next up — camera roll cleanup
+## 🗺 track: graph view
+
+A spatial map of the library instead of a grid — photos placed by what they actually
+look like, so you can see clusters rather than scroll a list.
+
+**Decisions locked:**
+- UMAP is the stable, cacheable map. It gets fit once and reused; coordinates are
+  written back to ChromaDB metadata.
+- d3-force is for *local* nudging at max zoom only — never fit globally, never written
+  back to ChromaDB. The map must stay stable between sessions.
+
+| phase | what | status |
+|---|---|---|
+| 1 | `compute_layout.py` — UMAP fit + cluster labels, full + incremental modes | ✅ built |
+| 2 | `graph_view.py` + `/api/graph-view` | ✅ built |
+| 3 | `GraphView.jsx` — canvas render, circular thumbs, cluster-colored rings, click-through | ✅ built, unpolished |
+| 4 | zoom / pan / level-of-detail | ❌ not started |
+| 5 | local overlap nudge (d3-force at max zoom) | ❌ not started |
+
+**Known issues to fix before polishing anything:**
+- The UMAP reducer was fit on a **2,000-photo sample** and never refit. All ~49.6k photos
+  have coordinates (projected onto that reducer incrementally), but the map's *structure*
+  comes from a 2k subset. This is the most likely reason the layout looks wrong. Refit on
+  the full library first.
+- Graph View currently plots only the **top 50 search results**, not the library. Making it
+  an actual map is its own piece of work, separate from Phases 4/5.
+- Clustering is Agglomerative at fixed k (broad=12, fine=60). Fixed k on a 2k fit is a
+  guess; worth revisiting once the refit lands.
+
+---
+
+## 🧗 track: climb cutter
+
+Assistive video trimming. The tool watches a video, proposes cuts where nothing is
+happening, and you approve or reject — you never scrub a timeline by hand.
+
+| phase | what | status |
+|---|---|---|
+| 1 | `video_motion.py` — pixel-diff motion detection, ffmpeg cut + timelapse export | ✅ built |
+| 2 | `motion_review.py` + review room UI — queue, before/after, approve/reject | ✅ built |
+| 2.5a/b | hover scrub, arrow-key stepping, draggable cut boundaries, edits persisted on approve | ✅ built |
+| 3 | `motion_stats.py` — aggregate stats over decisions | ❌ not built |
+
+**Calibration notes (learned the hard way):**
+- Portrait video needs explicit handling — don't assume landscape.
+- For bouldering footage the pixel-diff threshold wants to be **~3**, not the default 10.
+
+**Already there, easy to miss:** per-decision logging exists (`decisions.jsonl` with cut
+segments and saved-bytes estimates, plus per-video verdicts in `reviews/`), and there's a
+reclaimed-bytes savings ledger that's idempotent across re-reviews. Phase 3 is the
+*aggregator* on top of that, not the logging itself.
+
+**Deferred ideas** (revisit in an editing phase): `c` to add a cut, `Delete` to remove one;
+tiered fallbacks for robust playback.
+
+---
+
+## 🔜 next up — camera roll cleanup
 
 #### duplicate & near-duplicate finder
-Photos with a CLIP similarity score above ~0.97 are almost certainly the same shot — burst mode, accidental double-taps, the same photo sent over iMessage. Surface these in a side-by-side keep/delete UI so you can blow through them fast.
-
-#### reveal in Finder
-Every photo already has its full file path in the metadata. A "Show in Finder" button runs `open -R /path/to/photo.jpg` on macOS and highlights the exact file — so you can delete it yourself without the app needing write access to your library.
+Photos with a CLIP similarity above ~0.97 are almost certainly the same shot — burst mode,
+accidental double-taps, the same photo sent over iMessage. Surface these in a side-by-side
+keep/delete UI so you can blow through them fast. *(`duplicates.py` + `DuplicateReview.jsx` —
+neither exists yet.)*
 
 #### bulk select + export delete list
-Select a batch of photos in the UI, export their paths to a `.txt` file. Review in Finder, then delete manually. Safer than in-app deletion — gives you one last look before anything goes away.
-
-#### "find my worst photos"
-Blurry shots, accidental black screens, photos of the floor. These cluster together in embedding space. Searchable via text ("blurry dark accidental") or by flagging statistical outliers — embeddings that land far from any meaningful cluster.
+Select a batch in the UI, export their paths to a `.txt`. Review in Finder, then delete
+manually. Safer than in-app deletion — one last look before anything goes away.
+*(Not built. The existing bulk pad only increments the counter.)*
 
 #### more like this
-Click any photo → find every visually similar shot across your whole library. Already partially working via the image search endpoint; this turns it into a dedicated "more of these" flow with pagination.
+Click any photo → find every visually similar shot across the library. The image-search
+endpoint already does the hard part; this turns it into a dedicated flow with pagination.
 
 ---
 
-### 🗓 summer features
+## 🎬 track: video understanding
+
+**Sequencing decision: extend semantic understanding to video *before* building any
+further editing UI.** This is the gate — editing features that don't understand content
+are the manual-timeline trap.
+
+Right now videos are indexed only as their static derivative stills — `embed_photos.py`
+has no video handling at all. Real video search means sampling frames, embedding them,
+and making a clip findable by what happens inside it ("the send", "the fall", "someone
+laughing") rather than by its thumbnail.
+
+High priority, wanted soon, larger effort than it looks.
+
+---
+
+## 🗓 later features
 
 #### face clustering
-Group every photo by person without needing to name anyone upfront. Uses a face detection model on top of CLIP — first pass finds faces, second pass clusters them by identity. End result: a folder per person, built automatically.
+Group every photo by person without naming anyone upfront. Face detection first, then
+cluster by identity. End result: a folder per person, built automatically.
 
 #### timeline clustering + event detection
-If there's a gap of 3+ hours between photos, that's probably a new event. Group your library into auto-detected events ("Italy trip", "Jake's birthday", "random Tuesday") based purely on EXIF timestamps. No manual albums needed.
+A 3+ hour gap between photos is probably a new event. Auto-detect events ("Italy trip",
+"Jake's birthday", "random Tuesday") from EXIF timestamps alone. No manual albums.
 
 #### mood & aesthetic board
-"Show me all my low-light shots." "Find every photo with a blue/red/green palette." CLIP encodes mood and color naturally — these are just text queries with a slightly different framing, surfaced as a dedicated UI mode with preset filters.
+"Show me all my low-light shots." "Every photo with a blue palette." CLIP encodes mood and
+color naturally — these are text queries with different framing, surfaced as a dedicated
+mode with preset filters.
 
 #### timeline anomaly detection
-Find photos that are weirdly out of place — a photo from 2019 sitting in a 2023 event cluster, a screenshot buried in vacation photos, a misfiled duplicate. Useful for finding junk that slipped through and for auditing your library structure.
+Find photos that are weirdly out of place — a 2019 photo inside a 2023 cluster, a
+screenshot buried in vacation photos. Good for catching junk that slipped through.
 
 ---
 
-### 🚀 big swings (later)
+## 🚀 big swings (later)
 
 #### trip memory creation
-Cluster photos by date range into trips. Score each photo for quality (sharpness, composition, faces). Pick the best 20–30 per trip. Generate a small auto-album that plays over music. 
+Cluster photos by date range into trips. Score each for quality (sharpness, composition,
+faces). Pick the best 20–30 per trip. Generate a small auto-album that plays over music.
 
-Long-term: an agent that actually edits the trip — cuts, transitions, music sync — based on the narrative arc of the photos. Think: you go on a trip, come home, and an edit is waiting for you.
+Long-term: an agent that edits the trip — cuts, transitions, music sync — from the
+narrative arc of the photos. You go on a trip, come home, and an edit is waiting.
+
+---
+
+## ❌ explicitly not doing
+
+- **A full manual video timeline editor.** No Premiere/Final Cut competitor, no clip-dragging
+  NLE. Rejected deliberately in favor of assistive, understanding-driven editing plus
+  frictionless export. Don't resurrect this — if a feature request starts to look like
+  "let the user manually arrange clips," it's the wrong direction.
 
 ---
 
 ## workflow for adding a new feature
 
-1. **Backend first** — add a new file in `backend/` with the core logic, add a route to `server.py`
-2. **Test the endpoint** — curl it or use Postman to confirm the response shape
-3. **Frontend component** — add a new component in `src/components/`, wire it to the endpoint
+1. **Backend first** — new file in `backend/` with the core logic, add a route to `server.py`
+2. **Test the endpoint** — curl it to confirm the response shape
+3. **Frontend component** — new component in `src/components/`, wire it to the endpoint
 4. **Drop it into App.jsx** — add a nav entry or new view
 
-Each feature is self-contained. Claude Code can take a feature from this doc, implement it end-to-end, and nothing else breaks.
+Multi-phase features go one phase at a time via `/build-phase`: plan → implement → verify →
+pause for human check. There is no automated test suite, so "verify" means running it.
+
+**Never commit or push** — that's Connor's, manually. Enforced by hooks in `.githooks/`.

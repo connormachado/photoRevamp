@@ -1,5 +1,9 @@
 // Pure segment math shared across the review room (mirrors the backend so the
 // live preview matches what gets persisted).
+//
+// Segments are the OLD {start, end} shape, still used for the preview panels
+// (which play a list of spans). The editable timeline speaks regions now — see
+// ./regions.js and ./boundaryTypes.js.
 
 // Keep segments = the gaps between cuts over [0, duration].
 export function complementSegments(cuts, duration) {
@@ -18,12 +22,4 @@ export function complementSegments(cuts, duration) {
 
 export function sumDurations(segs) {
   return (segs || []).reduce((acc, s) => acc + (s.end - s.start), 0);
-}
-
-// Two segment lists equal within a small epsilon (used for the "edited" badge).
-export function segmentsEqual(a, b) {
-  a = a || [];
-  b = b || [];
-  if (a.length !== b.length) return false;
-  return a.every((s, i) => Math.abs(s.start - b[i].start) < 1e-3 && Math.abs(s.end - b[i].end) < 1e-3);
 }

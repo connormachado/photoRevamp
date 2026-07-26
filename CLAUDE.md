@@ -38,49 +38,65 @@ This rule is no longer just prose — it's enforced by git hooks so a drifting s
 ## Repo structure
 ```
 photoApp/
-
 ├── CLAUDE.md
-
 ├── RODEMAP.md
-
-├── stats.json           # delete counter persistence — GITIGNORED
-
+├── Makefile               # make start / stop / install / clean
+├── requirements.txt
+├── stats.json             # delete counter + reclaimed bytes — GITIGNORED
+├── .githooks/             # pre-commit + pre-push agent-commit block
 ├── backend/
-
-│   ├── server.py        # routes ONLY — imports logic from the modules below
-
-│   ├── search.py        # text search, image search, embed_text, embed_image
-
-│   ├── stats.py         # delete counter read/write
-
-│   ├── duplicates.py    # near-duplicate detection
-
-│   ├── clustering.py    # timeline clustering, event + face clustering
-
-│   ├── cleanup.py       # reveal in Finder, export delete list
-
-│   ├── utils.py         # shared helpers: load_model, extract_metadata, file_id
-
-│   └── embed_photos.py  # indexing pipeline (standalone, incremental, resumable)
-
-├── photo_db/            # ChromaDB data — GITIGNORED
-
-├── test_photos/         # 96-photo test set
-
-└── photo-search/        # Vite/React frontend
-
-└── src/
-
-├── App.jsx
-
-├── context/
-
-│   └── StatsContext.jsx   # global delete counter state
-
-├── components/            # one component per feature
-
-└── hooks/
+│   ├── server.py          # routes ONLY — imports logic from the modules below
+│   ├── search.py          # text search, image search, embed_text, embed_image
+│   ├── stats.py           # delete counter + reclaimed-bytes read/write
+│   ├── cleanup.py         # prune missing photos, reveal in Apple Photos
+│   ├── utils.py           # shared helpers: load_model, extract_metadata, file_id
+│   ├── embed_photos.py    # indexing pipeline (standalone, incremental, resumable)
+│   ├── backfill_uuids.py  # one-off: backfill apple_uuid onto existing rows
+│   ├── compute_layout.py  # Graph View: UMAP fit/transform + cluster labels
+│   ├── graph_view.py      # Graph View: /api/graph-view payload builder
+│   ├── video_motion.py    # Climb Cutter: pixel-diff motion detection + ffmpeg cuts
+│   ├── motion_review.py   # Climb Cutter: review queue, verdicts, savings ledger
+│   ├── edit_boundaries.py # Climb Cutter: edit-boundary type registry + export hooks
+│   ├── export_video.py    # Climb Cutter: render a plan → import into Apple Photos
+│   └── test-videos/       # manual fixtures — GITIGNORED
+├── photo_db/              # ChromaDB data + models/ + motion_review/ — GITIGNORED
+└── photo-search/          # Vite/React frontend
+    └── src/
+        ├── App.jsx
+        ├── context/
+        │   └── StatsContext.jsx      # global delete counter state
+        └── components/               # one component per feature
+            └── motion-review/        # Climb Cutter review room sub-app
+                ├── boundaryTypes.js  # edit-boundary registry (display half)
+                └── regions.js        # region math, mirrors edit_boundaries.py
 ```
+
+There is **no test suite** anywhere in the repo. `backend/test-videos/` holds manual
+fixtures, not tests. Verification is `npm run build` + importing the backend modules;
+every "validated" claim in this file rests on a manual run.
+
+## API surface (the actual routes — check here before inventing one)
+
+| route | method | purpose |
+|---|---|---|
+| `/stats` | GET | `{total, deleted, reclaimed_bytes}` — see wiring notes below |
+| `/stats/increment` | POST | bump delete counter by `{delta: ±1}` |
+| `/search/text` | POST | `{query, n}` → CLIP text search |
+| `/search/image` | POST | `{image_b64, n}` → visual similarity search |
+| `/api/graph-view` | GET | `?query&n` → search results with UMAP `x`/`y` + cluster ids |
+| `/thumbnail` | GET | `?path&size` → resized JPEG |
+| `/full` | GET | `?path` → original; HEIC converted to JPEG in memory |
+| `/reveal` | POST | `{id}` → spotlight the photo in Apple Photos via `apple_uuid` |
+| `/cleanup` | POST | prune ChromaDB rows whose files are gone from disk |
+| `/motion-review/queue` | GET | videos awaiting/having review |
+| `/motion-review/source` | GET | `?id` → browser-playable h264 copy (Range-enabled) |
+| `/motion-review/timelapse` | GET | `?id` → baked timelapse of removed sections |
+| `/motion-review/savings` | GET | running reclaimed-bytes pool |
+| `/motion-review/decision` | POST | `{video_id, verdict, regions?}` (legacy `cut_segments?` still accepted) |
+| `/motion-review/export` | POST | `{video_id, regions?}` → render + import into Photos + reveal, then record the approval |
+
+There is no `/photo` and no `/open-in-photos` — those names are stale; use `/full`
+and `/reveal`.
 
 ## Conventions
 
@@ -94,9 +110,15 @@ photoApp/
 
 ## Non-obvious wiring
 
-- **`GET /stats` is overloaded.** It returns one merged payload, `{total, deleted}`: `total` is the live `collection.count()` (header "X photos indexed"), `deleted` comes from `stats.py` reading `stats.json`. Don't repurpose `/stats` for just one of them — both the header and `DeleteCounter` read from it. The delete counter is bumped via `POST /stats/increment` with `{delta: ±1}`.
-- **Chip queries are the single source of truth.** The six junk-cull chips live in the exported `CHIPS` array in `SearchChips.jsx`. Junk Hunt re-imports `CHIPS` and fires all of them in parallel — edit the list in one place. Each chip carries a display `label` (with emoji) separate from the `query` sent to CLIP; never send the emoji to CLIP.
+- **`GET /stats` is overloaded.** It returns one merged payload, `{total, deleted, reclaimed_bytes}`: `total` is the live `collection.count()` (header "X photos indexed"), the other two come from `stats.py` reading `stats.json`. Don't repurpose `/stats` for just one of them — both the header and `DeleteCounter` read from it. The delete counter is bumped via `POST /stats/increment` with `{delta: ±1}`.
+- **`reclaimed_bytes` in `stats.json` is a mirror, not the ledger.** The authoritative per-video record is `photo_db/motion_review/savings.json`; `motion_review._apply_savings` writes there and then mirrors the total into `stats.json`. The review room reads `GET /motion-review/savings` directly, so nothing on the frontend currently consumes the `/stats` copy — keep them in sync anyway.
+- **Edit boundaries live in a two-file registry, and regions are the source of truth.** Every kind of timeline edit is declared once per side, keyed by the same type id string: `backend/edit_boundaries.py` (default params + the apply-on-export hook) and `photo-search/src/components/motion-review/boundaryTypes.js` (label, icon, colour, how it renders). Adding a type = one entry in each; nothing in `CutTimeline`, `motion_review.py` or `export_video.py` branches on a specific type. The wire/disk shape is a **region** — `{id, type, start, end, params}` in seconds — and `cut_segments` / `keep_segments` / `trimmed_duration` are now *derived* from it by running `build_plan`, kept only so the savings ledger and the preview panels keep their old shape. Reviews written before the registry carry only `cut_segments` and upgrade to cut regions on read.
+- **`render_plan` picks its ffmpeg strategy from the plan.** If every piece is a straight copy (speed 1, no filters) it uses the concat demuxer with inpoint/outpoint — the drop-only path, verified byte-identical to the pre-registry renderer. Any piece needing a transform switches the whole render to one `-filter_complex` graph (per-piece `trim`/`setpts` + `atrim`/`asetpts`/`atempo`, then `concat`), because the concat demuxer cannot vary playback rate per entry. `render_segments` is now a thin wrapper over it.
+- **Chip queries are the single source of truth.** The six junk-cull chips live in the exported `CHIPS` array in `SearchChips.jsx`. Junk Hunt re-imports `CHIPS` and fires all of them in parallel — edit the list in one place. Each chip is `{emoji, label, query}` with the emoji as its own field; only `query` goes to CLIP.
 - **"Show in Photos" auto-bumps the delete counter.** On a successful `/reveal`, `OpenInPhotosButton` calls `incrementDeleteCount()` (an optimistic "about to delete" proxy). If the counter drifts up unexpectedly, this is why. The shared `incrementDeleteCount`/`decrementDeleteCount` come from `StatsContext`, which wraps `App`'s returned tree.
+- **`/reveal` takes a `file_id`, but reveals by `apple_uuid`.** Photos are indexed from the derivatives cache, whose paths Photos.app doesn't know. The route looks the row up by `id`, pulls `apple_uuid` from metadata, and hands that to `cleanup.reveal_in_photos`, which runs `spotlight media item id` via AppleScript. Never try to reveal by filename or path.
+- **The UMAP reducer was fit on a 2,000-photo sample** (`photo_db/models/layout_meta.json`, `count_at_fit: 2000`, Jul 3) and has not been refit. All ~49.6k photos carry `x`/`y` because `compute_layout.py incremental` projects new rows onto that existing reducer. The map's *structure* therefore comes from a 2k subset — the likely reason the layout looks off. A full refit is `compute_layout.py` full-fit mode.
+- **Cluster labels are Agglomerative, not density-based.** `compute_layout.py` uses `sklearn.cluster.AgglomerativeClustering` at fixed k (`broad_k=12`, `fine_k=60`), writing `cluster_id_broad`/`cluster_id_fine` back to ChromaDB. There is no HDBSCAN in this project.
 
 ## Working with the user
 
@@ -107,15 +129,52 @@ photoApp/
 
 See `RODEMAP.md` for the full list. Current state:
 
+Library is ~49.6k photos indexed. Repo is consolidated on a single `main` branch
+(in sync with `origin/main`), no worktrees, no stashes — one source of truth.
+
 **Completed:**
 - ✅ Repo structure + CLAUDE.md / RODEMAP.md
-- ✅ `server.py` refactored into thin routes + `backend/` modules (`utils.py`, `search.py`)
-- ✅ HEIC → JPEG on-the-fly conversion in `/photo` endpoint
-- ✅ "Open in Photos" button + `/open-in-photos` AppleScript endpoint
+- ✅ `server.py` refactored into thin routes + `backend/` modules
+- ✅ HEIC → JPEG on-the-fly conversion in the `/full` endpoint
+- ✅ "Show in Photos" button + `/reveal` AppleScript endpoint (reveals by `apple_uuid`)
 - ✅ Results count toggle (12 / 24 / 48 / All)
 - ✅ Delete counter (`stats.py`, `StatsContext`, `DeleteCounter.jsx`) with local persistence
+- ✅ Bulk-delete number pad (`BulkAddPad.jsx`)
 - ✅ Search prompt chips (`SearchChips.jsx`)
-- ✅ Junk Hunt mode (`JunkHunt` button, parallel queries, deduped results)
+- ✅ Junk Hunt mode (parallel chip queries, deduped results)
+- ✅ Graph View Phase 1 — `compute_layout.py` (UMAP + Agglomerative, full + incremental)
+- ✅ Graph View Phase 2 — `graph_view.py` + `/api/graph-view`
+- ✅ Graph View Phase 3 — `GraphView.jsx` canvas render (works; cosmetically unpolished)
+- ✅ Climb Cutter Phase 1 — `video_motion.py` pixel-diff detection + ffmpeg cut/timelapse
+- ✅ Climb Cutter Phase 2 + 2.5a/b — review room: queue, hover scrub, arrow-key stepping,
+  draggable cut boundaries, verdicts persisted, reclaimed-bytes savings ledger
+- ✅ Climb Cutter edit-boundary framework — `edit_boundaries.py` + `boundaryTypes.js`
+  registry, regions as the source of truth, type picker toolbar + add (`c`) / remove
+  (`delete`), type-agnostic export via `build_plan` → `render_plan`. "cut" is the only
+  registered type so far; the render output is byte-identical to before the refactor.
+
+**Known gaps (verified absent, don't assume these exist):**
+- ❌ Graph View Phase 4 (zoom / LOD) and Phase 5 (overlap nudge) — not started. `GraphView.jsx`
+  is a fixed 920×600 canvas with no zoom, pan, or collision pass, and there is no `d3`
+  dependency in `package.json`.
+- ❌ Graph View renders only the top 50 search results at their UMAP coords — it is not yet a
+  whole-library map.
+- ❌ Duplicate finder (`duplicates.py`, `DuplicateReview.jsx`) — never built.
+- ❌ Timeline / event / face clustering (`clustering.py`) — never built.
+- ❌ Real video semantic understanding — `embed_photos.py` has no video handling at all;
+  videos are indexed only as their static derivative stills.
+- ❌ `motion_stats.py` aggregator — though decision logging itself *does* exist
+  (`photo_db/motion_review/decisions.jsonl` + per-video `reviews/`).
+- ⚠️ "Show in Photos" intermittently activates Photos.app without landing on the exact photo.
+  Cause unconfirmed; the split activate-then-spotlight `osascript` calls are a suspect.
+- ⚠️ `npm run lint` reports ~12 errors (`react-hooks/set-state-in-effect`,
+  `react-refresh/only-export-components`). The build is unaffected.
 
 **Immediate next:**
-1. Duplicate finder (`duplicates.py`, cosine sim > 0.97, `DuplicateReview.jsx`)
+1. Climb Cutter "speed" boundary type — one entry in `edit_boundaries.py` (hook returns a
+   `Piece` with `speed=K`) + one in `boundaryTypes.js`. The `-filter_complex` render path it
+   needs already exists and is smoke-tested; note that a sped-up piece currently lands at a
+   multiplied frame rate, so its hook should pin `fps` in the piece's `vf`.
+2. Expand Climb Cutter with further features (current build focus).
+2. Graph View polish — refit UMAP on the full library, then Phase 3 cosmetics.
+3. Real video semantic search (wanted soon, larger effort).

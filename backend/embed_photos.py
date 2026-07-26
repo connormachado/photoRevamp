@@ -65,8 +65,14 @@ def embed_images_batch(paths: list[Path], model, preprocess, device) -> list[lis
 
 # ── Indexing ──────────────────────────────────────────────────────────────────
 
-def index_photos(photos_dir: str, db_path: str):
-    """Walk photos_dir, embed everything not yet in the DB, upsert into ChromaDB."""
+def index_photos(photos_dir: str, db_path: str, progress_cb=None):
+    """Walk photos_dir, embed everything not yet in the DB, upsert into ChromaDB.
+
+    `progress_cb`, if given, is called as progress_cb(done, total) once before
+    the first batch and again after each one — used by the in-app "Update
+    Library" button to report progress. Leaving it None keeps the original
+    behavior exactly.
+    """
     photos_root = Path(photos_dir).expanduser()
     # all_photos = [
     #     p for p in photos_root.rglob("*")
@@ -92,6 +98,9 @@ def index_photos(photos_dir: str, db_path: str):
     to_index = [p for p in all_photos if file_id(p) not in already_indexed]
     print(f"Already indexed: {len(already_indexed):,} | To index: {len(to_index):,}")
 
+    if progress_cb:
+        progress_cb(0, len(to_index))
+
     if not to_index:
         print("Nothing new to index — DB is up to date.")
         return collection
@@ -103,18 +112,21 @@ def index_photos(photos_dir: str, db_path: str):
         batch_paths = to_index[i : i + BATCH_SIZE]
         embeddings, valid_paths = embed_images_batch(batch_paths, model, preprocess, device)
 
-        if not embeddings:
-            continue
+        if embeddings:
+            ids = [file_id(p) for p in valid_paths]
+            metadatas = [extract_metadata(p) for p in valid_paths]
 
-        ids = [file_id(p) for p in valid_paths]
-        metadatas = [extract_metadata(p) for p in valid_paths]
+            collection.upsert(
+                ids=ids,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                documents=[m["path"] for m in metadatas],  # store path as "document"
+            )
 
-        collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            metadatas=metadatas,
-            documents=[m["path"] for m in metadatas],  # store path as "document"
-        )
+        # Reported even when a whole batch failed to open, so the bar reflects
+        # photos consumed rather than photos successfully embedded.
+        if progress_cb:
+            progress_cb(min(i + BATCH_SIZE, len(to_index)), len(to_index))
 
     total = collection.count()
     print(f"\n✅ Done. Total photos in DB: {total:,}")
@@ -173,6 +185,42 @@ def search_by_image(image_path: str, db_path: str, n_results: int = 12):
     return results
 
 
+# ── Background-job wrapper ────────────────────────────────────────────────────
+
+def run_with_status(photos_dir: str, db_path: str, status_path: str):
+    """Run index_photos, mirroring its progress into a JSON status file.
+
+    This is how the in-app "Update Library" button works: server.py spawns this
+    script as a detached subprocess and polls the status file, so the Flask
+    process never loads CLIP and never blocks. Failures are recorded in the file
+    so the UI can show the message instead of just hanging.
+    """
+    from embed_job import write_status   # local import: CLI runs shouldn't need it
+
+    status_path = Path(status_path)
+
+    def progress(done, total):
+        write_status({"state": "running", "done": done, "total": total}, path=status_path)
+
+    try:
+        collection = index_photos(photos_dir, db_path, progress_cb=progress)
+        write_status({
+            "state": "done",
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "total_in_db": collection.count(),
+            "error": None,
+        }, path=status_path)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        write_status({
+            "state": "failed",
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "error": f"{type(e).__name__}: {e}",
+        }, path=status_path)
+        raise
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -182,6 +230,7 @@ if __name__ == "__main__":
     parser.add_argument("--query",  type=str, help="Natural language search query")
     parser.add_argument("--similar",type=str, help="Path to an image — find similar photos")
     parser.add_argument("--n",      type=int, default=12, help="Number of results to return")
+    parser.add_argument("--status-file", type=str, help="Write JSON progress here (used by the in-app button)")
     args = parser.parse_args()
 
     if args.query:
@@ -189,6 +238,9 @@ if __name__ == "__main__":
     elif args.similar:
         search_by_image(args.similar, args.db, args.n)
     elif args.photos:
-        index_photos(args.photos, args.db)
+        if args.status_file:
+            run_with_status(args.photos, args.db, args.status_file)
+        else:
+            index_photos(args.photos, args.db)
     else:
         parser.print_help()

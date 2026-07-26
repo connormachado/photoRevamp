@@ -1,26 +1,40 @@
 import { useRef, useState } from "react";
+import { getType } from "./boundaryTypes";
+import { sortRegions } from "./regions";
 
 /**
- * Scrub + edit timeline. Keep regions are clear; cut regions are red blocks.
+ * Scrub + edit timeline. Untouched footage is clear; each edit REGION is drawn
+ * as a block in its own type's colour (see ./boundaryTypes.js — this component
+ * never branches on a specific type).
  *
  * - Hover the bar → seeks the Original panel (onSeek) to preview that frame,
  *   with a guide line + timecode tooltip (Phase 2.5a).
- * - Drag a red block's left/right edge handle → edits that cut's boundary
- *   (onCutsChange), snapped to frames and clamped so it can't invert or cross a
- *   neighbor (Phase 2.5b). Dragging also previews the boundary frame.
+ * - Drag a block's left/right edge handle → edits that boundary (onRegionsChange),
+ *   snapped to frames and clamped so it can't invert or cross a neighbour
+ *   (Phase 2.5b). Dragging also previews the boundary frame.
+ * - Click a block → selects it, so the toolbar / Delete key can remove it.
  */
-export default function CutTimeline({ duration, cutSegments, fps = 30, playhead = 0, onSeek, onCutsChange }) {
+export default function CutTimeline({
+  duration,
+  regions,
+  fps = 30,
+  playhead = 0,
+  onSeek,
+  onRegionsChange,
+  selectedId = null,
+  onSelectRegion,
+}) {
   const total = duration || 1;
-  const cuts = cutSegments || [];
+  const regs = sortRegions(regions);
   const barRef = useRef(null);
-  const draggingRef = useRef(null); // { index, edge } while dragging a handle
+  const draggingRef = useRef(null); // { id, edge } while dragging a handle
   const [hoverX, setHoverX] = useState(null);
-  const [dragKey, setDragKey] = useState(null); // `${index}-${edge}` for styling
+  const [dragKey, setDragKey] = useState(null); // `${id}-${edge}` for styling
 
-  const minW = 2 / (fps || 30); // don't let a cut get thinner than ~2 frames
   const snap = (t) => (fps ? Math.round(t * fps) / fps : t);
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   const pct = (t) => `${clamp((t / total) * 100, 0, 100)}%`;
+  const minWidth = (reg) => (getType(reg.type).minWidthFrames || 2) / (fps || 30);
   const fmt = (s) => {
     const m = Math.floor(s / 60);
     const sec = (s % 60).toFixed(1).padStart(4, "0");
@@ -41,37 +55,40 @@ export default function CutTimeline({ duration, cutSegments, fps = 30, playhead 
   }
 
   // ── edge dragging ──────────────────────────────────────────────────────────
-  function startDrag(index, edge, e) {
+  function startDrag(id, edge, e) {
     e.stopPropagation();
     e.preventDefault();
-    draggingRef.current = { index, edge };
-    setDragKey(`${index}-${edge}`);
+    draggingRef.current = { id, edge };
+    setDragKey(`${id}-${edge}`);
     window.addEventListener("mousemove", onDragMove);
     window.addEventListener("mouseup", endDrag);
   }
 
   function onDragMove(e) {
     const drag = draggingRef.current;
-    if (!drag || !onCutsChange) return;
-    const { index, edge } = drag;
+    if (!drag || !onRegionsChange) return;
+    const { id, edge } = drag;
+    const index = regs.findIndex((r) => r.id === id);
+    if (index === -1) return;
     const { t } = timeAtClientX(e.clientX);
     const nt = snap(t);
-    const seg = cuts[index];
+    const seg = regs[index];
+    const minW = minWidth(seg);
     let next;
     if (edge === "start") {
-      const lo = index > 0 ? cuts[index - 1].end : 0;
+      const lo = index > 0 ? regs[index - 1].end : 0;
       const hi = seg.end - minW;
       const start = clamp(nt, lo, hi);
       next = { ...seg, start };
       onSeek && onSeek(start);
     } else {
       const lo = seg.start + minW;
-      const hi = index < cuts.length - 1 ? cuts[index + 1].start : total;
+      const hi = index < regs.length - 1 ? regs[index + 1].start : total;
       const end = clamp(nt, lo, hi);
       next = { ...seg, end };
       onSeek && onSeek(end);
     }
-    onCutsChange(cuts.map((s, i) => (i === index ? next : s)));
+    onRegionsChange(regs.map((r) => (r.id === id ? next : r)));
   }
 
   function endDrag() {
@@ -81,11 +98,11 @@ export default function CutTimeline({ duration, cutSegments, fps = 30, playhead 
     window.removeEventListener("mouseup", endDrag);
   }
 
-  function Handle({ index, edge, t }) {
-    const active = dragKey === `${index}-${edge}`;
+  function Handle({ id, edge, t, color }) {
+    const active = dragKey === `${id}-${edge}`;
     return (
       <div
-        onMouseDown={(e) => startDrag(index, edge, e)}
+        onMouseDown={(e) => startDrag(id, edge, e)}
         style={{
           position: "absolute",
           top: -4,
@@ -104,12 +121,19 @@ export default function CutTimeline({ duration, cutSegments, fps = 30, playhead 
           width: 4,
           height: "100%",
           borderRadius: 2,
-          background: active ? "#fff" : "#f87171",
-          boxShadow: active ? "0 0 8px #f87171" : "none",
+          background: active ? "#fff" : color,
+          boxShadow: active ? `0 0 8px ${color}` : "none",
         }} />
       </div>
     );
   }
+
+  // Footer follows the only type in play, so a cut-only timeline reads exactly
+  // like it always has ("3 cuts", in red); mixed timelines fall back to "edits".
+  const uniform = regs.length && regs.every((r) => r.type === regs[0].type)
+    ? getType(regs[0].type) : null;
+  const footerColor = uniform ? uniform.color : "#f87171";
+  const noun = uniform ? uniform.label.toLowerCase() : "edit";
 
   return (
     <div style={{ marginTop: 4 }}>
@@ -117,6 +141,7 @@ export default function CutTimeline({ duration, cutSegments, fps = 30, playhead 
         ref={barRef}
         onMouseMove={onBarMouseMove}
         onMouseLeave={() => setHoverX(null)}
+        onMouseDown={() => onSelectRegion && onSelectRegion(null)}
         style={{
           position: "relative",
           height: 44,
@@ -127,38 +152,49 @@ export default function CutTimeline({ duration, cutSegments, fps = 30, playhead 
           cursor: onSeek ? "col-resize" : "default",
         }}
       >
-        {/* rounded clip for the cut blocks only, so handles/tooltip can overflow */}
+        {/* rounded clip for the region blocks only, so handles/tooltip can overflow */}
         <div style={{ position: "absolute", inset: 0, borderRadius: 8, overflow: "hidden" }}>
-          {cuts.map((seg, i) => (
-            <div
-              key={i}
-              title={`cut ${fmt(seg.start)} → ${fmt(seg.end)}`}
-              style={{
-                position: "absolute",
-                top: 0,
-                bottom: 0,
-                left: pct(seg.start),
-                width: pct(seg.end - seg.start),
-                background: "rgba(248,113,113,0.35)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontSize: 10,
-                color: "#fecaca",
-                overflow: "hidden",
-                whiteSpace: "nowrap",
-              }}
-            >
-              ✂
-            </div>
-          ))}
+          {regs.map((seg) => {
+            const type = getType(seg.type);
+            const selected = selectedId === seg.id;
+            const ctx = { selected, pct, fmt, fps, duration: total };
+            if (type.renderBlock) return type.renderBlock(seg, ctx);
+            return (
+              <div
+                key={seg.id}
+                title={type.describe(seg)}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                  onSelectRegion && onSelectRegion(seg.id);
+                }}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  bottom: 0,
+                  left: pct(seg.start),
+                  width: pct(seg.end - seg.start),
+                  background: type.fill,
+                  boxShadow: selected ? `inset 0 0 0 2px ${type.glyphColor}` : "none",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 10,
+                  color: type.glyphColor,
+                  overflow: "hidden",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {type.glyph(seg)}
+              </div>
+            );
+          })}
         </div>
 
-        {/* drag handles on each cut edge (above the clip so they're fully grabbable) */}
-        {onCutsChange && cuts.map((seg, i) => (
-          <span key={`h${i}`}>
-            <Handle index={i} edge="start" t={seg.start} />
-            <Handle index={i} edge="end" t={seg.end} />
+        {/* drag handles on each region edge (above the clip so they're fully grabbable) */}
+        {onRegionsChange && regs.map((seg) => (
+          <span key={`h${seg.id}`}>
+            <Handle id={seg.id} edge="start" t={seg.start} color={getType(seg.type).color} />
+            <Handle id={seg.id} edge="end" t={seg.end} color={getType(seg.type).color} />
           </span>
         ))}
 
@@ -222,8 +258,8 @@ export default function CutTimeline({ duration, cutSegments, fps = 30, playhead 
       {/* ruler: start / end */}
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, color: "#4b7a5c", fontSize: 11, fontFamily: "monospace" }}>
         <span>0:00.0</span>
-        <span style={{ color: "#f87171" }}>
-          {cuts.length} cut{cuts.length === 1 ? "" : "s"} · drag red edges to trim
+        <span style={{ color: footerColor }}>
+          {regs.length} {noun}{regs.length === 1 ? "" : "s"} · drag edges to trim · del to remove
         </span>
         <span>{fmt(total)}</span>
       </div>

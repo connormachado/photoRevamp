@@ -19,6 +19,8 @@ from pathlib import Path
 
 import imageio_ffmpeg
 
+import edit_boundaries as eb
+import export_video
 import stats as stats_store
 from utils import DEFAULT_DB_PATH
 
@@ -85,43 +87,47 @@ def _estimated_saved_bytes(prop: dict) -> int:
     return _saved_bytes(size, prop.get("original_duration") or 0, prop.get("trimmed_duration") or 0)
 
 
-def _sanitize_cuts(cuts: list, duration: float) -> list:
-    """Clamp to [0, duration], drop empties, sort, and merge overlaps.
+# ── Edit boundaries ───────────────────────────────────────────────────────────
+# Regions are the source of truth; cut_segments / keep_segments are derived from
+# them. Sanitizing and planning live in edit_boundaries.py so every boundary type
+# goes through one place — see that module's docstring for the data model.
 
-    The frontend already constrains drags, but the backend is authoritative — a
-    malformed POST can't produce garbage cut/keep segments."""
-    cleaned = []
-    for seg in cuts or []:
-        try:
-            s = max(0.0, float(seg["start"]))
-            e = min(float(duration), float(seg["end"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if e - s > 1e-3:
-            cleaned.append((s, e))
-    cleaned.sort()
-    merged = []
-    for s, e in cleaned:
-        if merged and s <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-    return [{"start": round(s, 3), "end": round(e, 3)} for s, e in merged]
+def _proposed_regions(prop: dict) -> list:
+    """The proposal's own cuts as regions — the 'unedited' baseline."""
+    orig_dur = prop.get("original_duration", 0)
+    return eb.sanitize_regions(eb.regions_from_cuts(prop.get("cut_segments", [])), orig_dur)
 
 
-def _complement_segments(cuts: list, duration: float) -> list:
-    """Keep segments = the gaps between cuts over [0, duration]."""
-    keeps = []
-    cursor = 0.0
-    for seg in sorted(cuts or [], key=lambda s: s["start"]):
-        s = max(0.0, float(seg["start"]))
-        e = min(float(duration), float(seg["end"]))
-        if s > cursor + 1e-3:
-            keeps.append({"start": round(cursor, 3), "end": round(s, 3)})
-        cursor = max(cursor, e)
-    if cursor < duration - 1e-3:
-        keeps.append({"start": round(cursor, 3), "end": round(float(duration), 3)})
-    return keeps
+def _resolve_regions(prop: dict, regions, cut_segments) -> list | None:
+    """Coerce whatever a caller sent into a sanitized region list, or None.
+
+    `regions` is the current wire format; `cut_segments` is the legacy one and is
+    upgraded to cut regions. The backend is authoritative either way — the
+    frontend's boundaries are only a preview until they pass through here.
+    """
+    orig_dur = prop.get("original_duration", 0)
+    if regions is not None:
+        return eb.sanitize_regions(regions, orig_dur)
+    if cut_segments is not None:
+        return eb.sanitize_regions(eb.regions_from_cuts(cut_segments), orig_dur)
+    return None
+
+
+def _derive(regions: list, prop: dict) -> dict:
+    """Everything downstream still wants: cuts, keeps, trimmed duration, plan.
+
+    Regions are the source of truth; cut_segments / keep_segments /
+    trimmed_duration are computed from them by running the plan, so they stay
+    correct for boundary types that transform footage instead of dropping it.
+    """
+    orig_dur = prop.get("original_duration", 0)
+    plan = eb.build_plan(regions, orig_dur, prop.get("source_path", ""))
+    return {
+        "plan": plan,
+        "cut_segments": eb.regions_to_cuts(regions),
+        "keep_segments": eb.plan_to_segments(plan),
+        "trimmed_duration": eb.plan_output_duration(plan),
+    }
 
 
 # ── Verdict state ─────────────────────────────────────────────────────────────
@@ -161,16 +167,23 @@ def list_queue() -> list[dict]:
         orig_dur = prop.get("original_duration", 0)
         proposed_cuts = prop.get("cut_segments", [])
 
-        # If the video was reviewed WITH edited cuts, surface those so a reload
-        # resumes with the user's edits. Proposals on disk are never mutated.
-        if review.get("cut_segments") is not None:
-            cut_segments = review["cut_segments"]
-            keep_segments = review.get("keep_segments") or _complement_segments(cut_segments, orig_dur)
-            trimmed_duration = review.get("trimmed_duration", prop.get("trimmed_duration", 0))
+        # If the video was reviewed WITH edited boundaries, surface those so a
+        # reload resumes with the user's edits. Proposals on disk are never
+        # mutated. Reviews written before the edit-boundary registry existed
+        # carry only cut_segments; they upgrade to cut regions on read.
+        proposed_regions = _proposed_regions(prop)
+        if review.get("regions") is not None:
+            regions = eb.sanitize_regions(review["regions"], orig_dur)
+        elif review.get("cut_segments") is not None:
+            regions = eb.sanitize_regions(
+                eb.regions_from_cuts(review["cut_segments"]), orig_dur)
         else:
-            cut_segments = proposed_cuts
-            keep_segments = prop.get("keep_segments", [])
-            trimmed_duration = prop.get("trimmed_duration", 0)
+            regions = proposed_regions
+
+        derived = _derive(regions, prop)
+        cut_segments = derived["cut_segments"]
+        keep_segments = derived["keep_segments"]
+        trimmed_duration = derived["trimmed_duration"]
 
         size_bytes = os.path.getsize(source_path) if source_exists else 0
 
@@ -181,7 +194,9 @@ def list_queue() -> list[dict]:
             "source_exists": source_exists,
             "original_duration": orig_dur,
             "trimmed_duration": trimmed_duration,
-            "cut_segments": cut_segments,
+            "regions": regions,                        # ← source of truth
+            "proposed_regions": proposed_regions,
+            "cut_segments": cut_segments,              # ← derived, legacy shape
             "keep_segments": keep_segments,
             "proposed_cut_segments": proposed_cuts,
             "num_cuts": len(cut_segments),
@@ -194,6 +209,7 @@ def list_queue() -> list[dict]:
             "verdict": review.get("verdict"),
             "edited": bool(review.get("edited")),
             "reviewed_at": review.get("reviewed_at"),
+            "exported_at": review.get("exported_at"),
             "created": prop.get("created", ""),
         })
 
@@ -294,13 +310,19 @@ def _apply_savings(video_id: str, verdict: str, saved_bytes: int) -> int:
 
 # ── Decision recording ────────────────────────────────────────────────────────
 
-def record_decision(video_id: str, verdict: str, cut_segments: list | None = None) -> dict:
-    """Record a per-video verdict, optionally with edited cut boundaries.
+def record_decision(
+    video_id: str,
+    verdict: str,
+    regions: list | None = None,
+    cut_segments: list | None = None,
+) -> dict:
+    """Record a per-video verdict, optionally with edited edit-boundary regions.
 
-    On approve, if `cut_segments` is provided the backend sanitizes them and
-    recomputes keep_segments / trimmed_duration / saved bytes authoritatively —
-    the frontend's numbers are only a preview. Writes an append-only audit line
-    (decisions.jsonl) and reviews/<video_id>.json (latest state, for resume).
+    On approve, if `regions` (or legacy `cut_segments`) is provided the backend
+    sanitizes them and recomputes cut_segments / keep_segments /
+    trimmed_duration / saved bytes authoritatively — the frontend's numbers are
+    only a preview. Writes an append-only audit line (decisions.jsonl) and
+    reviews/<video_id>.json (latest state, for resume).
     """
     if verdict not in VALID_VERDICTS:
         raise ValueError(f"invalid verdict: {verdict!r}")
@@ -314,17 +336,19 @@ def record_decision(video_id: str, verdict: str, cut_segments: list | None = Non
     sp = prop.get("source_path", "")
     size_bytes = os.path.getsize(sp) if sp and os.path.exists(sp) else 0
 
-    # Edited cuts only meaningfully apply to an approval ("apply these cuts").
-    if verdict == "approve" and cut_segments is not None:
-        cuts = _sanitize_cuts(cut_segments, orig_dur)
-        keeps = _complement_segments(cuts, orig_dur)
-        trimmed_duration = round(sum(k["end"] - k["start"] for k in keeps), 3)
-        edited = cuts != _sanitize_cuts(prop.get("cut_segments", []), orig_dur)
+    # Edited boundaries only meaningfully apply to an approval ("apply these").
+    user_regions = _resolve_regions(prop, regions, cut_segments)
+    if verdict == "approve" and user_regions is not None:
+        final_regions = user_regions
+        edited = not eb.regions_equal(final_regions, _proposed_regions(prop))
     else:
-        cuts = prop.get("cut_segments", [])
-        keeps = prop.get("keep_segments", [])
-        trimmed_duration = prop.get("trimmed_duration", 0)
+        final_regions = _proposed_regions(prop)
         edited = False
+
+    derived = _derive(final_regions, prop)
+    cuts = derived["cut_segments"]
+    keeps = derived["keep_segments"]
+    trimmed_duration = derived["trimmed_duration"]
 
     saved_bytes = _saved_bytes(size_bytes, orig_dur, trimmed_duration)
 
@@ -338,6 +362,7 @@ def record_decision(video_id: str, verdict: str, cut_segments: list | None = Non
         "trimmed_duration": trimmed_duration,
         "estimated_saved_bytes": saved_bytes,
         "edited": edited,
+        "regions": final_regions,
         "cut_segments": cuts,
     }
     DECISIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -352,6 +377,7 @@ def record_decision(video_id: str, verdict: str, cut_segments: list | None = Non
         "video_id": video_id,
         "verdict": verdict,
         "reviewed_at": ts,
+        "regions": final_regions,
         "cut_segments": cuts,
         "keep_segments": keeps,
         "trimmed_duration": trimmed_duration,
@@ -363,3 +389,89 @@ def record_decision(video_id: str, verdict: str, cut_segments: list | None = Non
         "video_saved_bytes": saved_bytes,
         "savings_total_bytes": total_saved,
     }
+
+
+# ── Export to Photos ──────────────────────────────────────────────────────────
+
+def export_to_photos(
+    video_id: str,
+    regions: list | None = None,
+    cut_segments: list | None = None,
+) -> dict:
+    """Render the kept footage, import it into Photos, reveal it, then record it.
+
+    This is what the green "save" button does — approving a trim and writing it
+    out are one action, not two. Ordering is deliberate: the render/import/reveal
+    happen FIRST and the ledger is only written once Photos actually has the
+    clip, so a failed export leaves no phantom approval behind.
+
+    The original is never deleted or modified; the export is a new asset sitting
+    beside it in the timeline, so deleting the original stays a manual decision.
+    The savings pool is still credited (via record_decision) because it has always
+    tracked the hypothetical "if you delete these originals you'd reclaim X" — it
+    is a projection, not a record of bytes actually freed.
+
+    Raises FileNotFoundError (no proposal / missing source) or RuntimeError (the
+    ffmpeg render failed). Import/reveal trouble comes back inside the payload.
+    """
+    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    if not prop:
+        raise FileNotFoundError(f"no proposal for {video_id}")
+
+    source_path = prop.get("source_path", "")
+    if not source_path or not os.path.exists(source_path):
+        raise FileNotFoundError(f"source video missing for {video_id}: {source_path}")
+
+    # Backend is authoritative over the boundaries, same as record_decision.
+    final_regions = _resolve_regions(prop, regions, cut_segments)
+    if final_regions is None:
+        final_regions = _proposed_regions(prop)
+
+    # The plan is what each boundary type said to do with its span; the renderer
+    # just executes it, so this stays the same call for every future type.
+    plan = eb.build_plan(final_regions, prop.get("original_duration", 0), source_path)
+    if not plan:
+        raise ValueError("the cuts cover the whole video — there is nothing to export")
+
+    # 1) Render → import → reveal. Nothing is logged until this succeeds.
+    result = export_video.export_and_import(
+        source_path, plan, out_name=f"{video_id}_trimmed.mp4"
+    )
+
+    # 2) Now record the approval through the normal path (decisions.jsonl,
+    #    reviews/<id>.json, savings pool) so an export and an approve stay one
+    #    consistent story rather than two competing records.
+    review = record_decision(video_id, "approve", regions=final_regions)
+
+    ts = _now_iso()
+    imported = result.get("imported") or {}
+
+    # 3) Append the export itself to the same audit log, tagged so it is
+    #    distinguishable from a verdict line.
+    audit = {
+        "ts": ts,
+        "action": "export",
+        "video_id": video_id,
+        "apple_uuid": prop.get("apple_uuid", ""),
+        "export_path": result.get("rendered_path"),
+        "export_size_bytes": result.get("size_bytes"),
+        "source_date": result.get("source_date"),
+        "photos_item_id": imported.get("item_id"),
+        "imported": bool(imported.get("success")),
+        "date_set_via_applescript": bool(imported.get("date_set")),
+        "revealed": bool((result.get("revealed") or {}).get("success")),
+    }
+    with open(DECISIONS_LOG, "a") as f:
+        f.write(json.dumps(audit) + "\n")
+
+    # 4) Fold the export onto the resumable review state.
+    review_state = _read_json(_review_path(video_id)) or {}
+    review_state.update({
+        "exported_at": ts,
+        "export_path": result.get("rendered_path"),
+        "export_size_bytes": result.get("size_bytes"),
+        "photos_item_id": imported.get("item_id"),
+    })
+    _atomic_write_json(_review_path(video_id), review_state)
+
+    return {**review, **result, "exported_at": ts}

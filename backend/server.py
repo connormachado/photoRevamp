@@ -27,6 +27,7 @@ import search
 import graph_view
 import cleanup
 import motion_review
+import embed_job
 import stats as stats_store
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
 from pathlib import Path
@@ -43,17 +44,31 @@ preprocess = None
 tokenizer = None
 device = None
 collection = None
+db_path_global = None
 
 
 def load_everything(db_path: str):
-    global model, preprocess, tokenizer, device, collection
+    global model, preprocess, tokenizer, device, db_path_global
 
     print("Loading CLIP...")
     model, preprocess, tokenizer, device = load_model()
 
-    client = chromadb.PersistentClient(path=db_path)
-    collection = client.get_collection(COLLECTION_NAME)
+    db_path_global = db_path
+    reload_collection()
     print(f"DB loaded. {collection.count():,} photos indexed.")
+
+
+def reload_collection():
+    """Re-open the ChromaDB collection from disk.
+
+    Chroma loads its HNSW index into memory per process. When the embed
+    subprocess adds new vectors, this process keeps serving the index it read at
+    startup — so new photos are invisible to search and the header count until
+    we reopen. Called once after each completed embed run.
+    """
+    global collection
+    client = chromadb.PersistentClient(path=db_path_global)
+    collection = client.get_collection(COLLECTION_NAME)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
@@ -170,6 +185,37 @@ def reveal_in_photos():
     return jsonify({"success": True})
 
 
+# ── Library indexing (in-app embed trigger) ──────────────────────────────────
+
+# Tracks which run we've already reloaded the collection for, so a run's status
+# is only acted on once no matter how many times the UI polls.
+_embed_reloaded_for = None
+
+
+@app.route("/api/embed/start", methods=["POST"])
+def embed_start():
+    """Launch an incremental catch-up index in the background."""
+    result = embed_job.start_job()
+    if not result["started"]:
+        code = 409 if result["reason_code"] == "already_running" else 400
+        return jsonify(result), code
+    return jsonify(result)
+
+
+@app.route("/api/embed/status")
+def embed_status():
+    """Current embed job status — polled by the UI every couple of seconds."""
+    global _embed_reloaded_for
+    status = embed_job.read_status()
+
+    if status["state"] == "done" and status["started_at"] != _embed_reloaded_for:
+        _embed_reloaded_for = status["started_at"]
+        reload_collection()
+        status = {**status, "total_in_db": collection.count()}
+
+    return jsonify(status)
+
+
 @app.route("/cleanup", methods=["POST"])
 def cleanup_missing():
     """Prune ChromaDB entries whose files have been deleted from disk."""
@@ -226,15 +272,40 @@ def motion_review_decision():
     data = request.get_json() or {}
     video_id = data.get("video_id", "")
     verdict = data.get("verdict", "")
-    cut_segments = data.get("cut_segments")  # optional edited boundaries
+    regions = data.get("regions")            # optional edited boundaries
+    cut_segments = data.get("cut_segments")  # legacy shape, still accepted
     if not video_id:
         return jsonify({"error": "no video_id provided"}), 400
     try:
-        record = motion_review.record_decision(video_id, verdict, cut_segments)
+        record = motion_review.record_decision(video_id, verdict, regions, cut_segments)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 404
+    return jsonify(record)
+
+
+@app.route("/motion-review/export", methods=["POST"])
+def motion_review_export():
+    """Render the kept footage, import it into Photos, reveal it, and log it.
+
+    This is the green save button: approving a trim and writing it out are one
+    action. The original is never touched — the export lands beside it.
+    """
+    data = request.get_json() or {}
+    video_id = data.get("video_id", "")
+    regions = data.get("regions")            # optional edited boundaries
+    cut_segments = data.get("cut_segments")  # legacy shape, still accepted
+    if not video_id:
+        return jsonify({"error": "no video_id provided"}), 400
+    try:
+        record = motion_review.export_to_photos(video_id, regions, cut_segments)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
     return jsonify(record)
 
 
