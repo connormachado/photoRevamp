@@ -87,7 +87,11 @@ function HeaderSaveButton({ onExport, exporting, saved }) {
 }
 
 export default function ReviewStage({ video, regions, onRegionsChange, onExport, exporting }) {
+  // The playhead is PLACED, not hovered: it only moves on click, drag, ←/→ or
+  // real playback. `preview` is the transient hover position — it moves the
+  // Original panel so you can see that frame, but never the playhead itself.
   const [playhead, setPlayhead] = useState(0);
+  const [preview, setPreview] = useState(null);
   const [activeTypeId, setActiveTypeId] = useState(DEFAULT_TYPE_ID);
   const [selectedId, setSelectedId] = useState(null);
   const originalRef = useRef(null);      // the Original panel's <video>, for seeking
@@ -111,24 +115,49 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
   const isEdited = video ? !regionsEqual(regions, proposedRegions) : false;
   const selected = (regions || []).find((r) => r.id === selectedId) || null;
 
-  // Playback updates the playhead; scrub/step both update it AND move the video.
-  const setPlay = useCallback((t) => {
+  // Move the Original panel to time t without touching any state. Pausing first
+  // is what makes it render that exact frame.
+  const seekVideo = useCallback((t) => {
+    const v = originalRef.current;
+    if (!v) return;
+    v.pause();
+    v.currentTime = t;
+  }, []);
+
+  // PLACE the playhead: click, playhead drag, ←/→ and boundary drags all land
+  // here. Snapped to a real frame so `c` cuts exactly where the line sits.
+  const commitPlayhead = useCallback((t) => {
+    if (!duration) return;
+    const snapped = fps ? Math.round(t * fps) / fps : t;
+    const clamped = Math.max(0, Math.min(duration, snapped));
+    seekVideo(clamped);
+    setPreview(null);
+    playheadRef.current = clamped;
+    setPlayhead(clamped);
+  }, [duration, fps, seekVideo]);
+
+  // PREVIEW a frame under the cursor — video moves, playhead does not.
+  const previewAt = useCallback((t) => {
+    if (!duration) return;
+    const clamped = Math.max(0, Math.min(duration, t));
+    seekVideo(clamped);
+    setPreview(clamped);
+  }, [duration, seekVideo]);
+
+  // Pointer left the bar: drop the preview and put the frame back on the playhead.
+  const endPreview = useCallback(() => {
+    setPreview(null);
+    seekVideo(playheadRef.current);
+  }, [seekVideo]);
+
+  // Only genuine playback may move the playhead on its own. `timeupdate` also
+  // fires for the seeks above and for SegmentVideo's segment-change reset, which
+  // is exactly what used to yank the playhead back to 0 mid-drag.
+  const onPlaybackTime = useCallback((t, playing) => {
+    if (!playing) return;
     playheadRef.current = t;
     setPlayhead(t);
   }, []);
-
-  // Seek the Original panel to time t and park the playhead there (renders that
-  // exact frame because the video is paused first).
-  const seek = useCallback((t) => {
-    if (!duration) return;
-    const clamped = Math.max(0, Math.min(duration, t));
-    const v = originalRef.current;
-    if (v) {
-      v.pause();
-      v.currentTime = clamped;
-    }
-    setPlay(clamped);
-  }, [duration, setPlay]);
 
   // Drop a boundary of the ACTIVE type at the playhead. If the playhead already
   // sits inside one, select that instead of stacking a second on top of it.
@@ -161,7 +190,7 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
         e.preventDefault(); // don't scroll the page
         const frames = e.shiftKey ? 10 : 1;
         const step = frames / fps;
-        seek(playheadRef.current + (e.key === "ArrowRight" ? step : -step));
+        commitPlayhead(playheadRef.current + (e.key === "ArrowRight" ? step : -step));
       } else if (e.key === "c" || e.key === "C") {
         e.preventDefault();
         addAtPlayhead();
@@ -175,7 +204,7 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [video, fps, seek, addAtPlayhead, removeSelected, selectedId]);
+  }, [video, fps, commitPlayhead, addAtPlayhead, removeSelected, selectedId]);
 
   if (!video) {
     return (
@@ -219,12 +248,12 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
       </div>
 
       {/* Three synced panels — the Original doubles as the scrub viewer */}
-      <SyncedPanels video={video} onTime={setPlay} videoRef={originalRef} cuts={cuts} keeps={keeps} />
+      <SyncedPanels video={video} onTime={onPlaybackTime} videoRef={originalRef} cuts={cuts} keeps={keeps} />
 
       {/* Scrub + edit timeline + frame readout */}
       <div style={{ marginTop: 24 }}>
         <div style={{ fontSize: 11, color: "#5eead4aa", letterSpacing: "0.05em", marginBottom: 6 }}>
-          hover to scrub · ←/→ step 1 frame · shift+←/→ step 10 · drag edges to trim · click a block then delete to remove
+          click to place the playhead · drag it to scrub · hover to preview · ←/→ step 1 frame · shift+←/→ step 10 · c adds a cut there · click a block then delete to remove
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, gap: 16, flexWrap: "wrap" }}>
           <BoundaryToolbar
@@ -255,8 +284,14 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
                 ↺ reset to proposed
               </button>
             )}
-            <span style={{ fontSize: 12, color: "#e5e5e5", fontFamily: "monospace" }}>
-              {fmtDur(playhead)} · frame {Math.round(playhead * fps)}
+            {/* Reads out whatever frame you're actually looking at: the hovered
+                one while previewing, otherwise the placed playhead. */}
+            <span style={{
+              fontSize: 12,
+              color: preview == null ? "#e5e5e5" : "#9ca3af",
+              fontFamily: "monospace",
+            }}>
+              {fmtDur(preview ?? playhead)} · frame {Math.round((preview ?? playhead) * fps)}
             </span>
           </div>
         </div>
@@ -265,7 +300,9 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
           regions={regions}
           fps={fps}
           playhead={playhead}
-          onSeek={seek}
+          onCommit={commitPlayhead}
+          onPreview={previewAt}
+          onPreviewEnd={endPreview}
           onRegionsChange={onRegionsChange}
           selectedId={selectedId}
           onSelectRegion={setSelectedId}

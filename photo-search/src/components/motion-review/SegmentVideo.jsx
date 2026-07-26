@@ -49,7 +49,10 @@ export default function SegmentVideo({ src, segments, rate = 1, onTime }) {
   function onTimeUpdate() {
     const v = ref.current;
     if (!v || !segments.length) return;
-    if (onTime) onTime(v.currentTime);
+    // Report whether we're actually PLAYING: `timeupdate` also fires for the
+    // programmatic seeks above (and the segment-change reset), and the timeline
+    // must not treat those as "the playhead moved".
+    if (onTime) onTime(v.currentTime, !v.paused);
     const seg = segments[idxRef.current];
     if (!seg) return;
     if (v.currentTime >= seg.end - 0.02) {

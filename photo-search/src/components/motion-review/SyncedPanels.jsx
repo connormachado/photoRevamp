@@ -53,7 +53,10 @@ const plainVideoStyle = { width: "100%", height: "100%", objectFit: "contain", b
  * The panel aspect ratio is MEASURED from the loaded video (videoWidth/Height),
  * which the browser reports post-rotation — so portrait iPhone .MOV files (that
  * are stored landscape + a rotation flag) fill the frame instead of shrinking.
- * `onTime` reports the currently-playing time up so the timeline playhead moves.
+ * `onTime(t, playing)` reports the currently-playing time up so the timeline
+ * playhead moves. The second argument matters: `timeupdate` also fires for
+ * programmatic seeks (scrub previews, segment resets), and the timeline ignores
+ * those — only real playback is allowed to move the playhead.
  */
 export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, keeps: keepsProp }) {
   const src = video.source_exists ? `${API}/motion-review/source?id=${video.video_id}` : null;
@@ -79,7 +82,7 @@ export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, 
               controls
               preload="metadata"
               onLoadedMetadata={onLoadedMetadata}
-              onTimeUpdate={(e) => onTime && onTime(e.target.currentTime)}
+              onTimeUpdate={(e) => onTime && onTime(e.target.currentTime, !e.target.paused)}
               style={plainVideoStyle}
             />
           : <Placeholder text="Source video not available on disk" />}

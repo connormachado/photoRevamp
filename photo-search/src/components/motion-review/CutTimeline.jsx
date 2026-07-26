@@ -7,11 +7,18 @@ import { sortRegions } from "./regions";
  * as a block in its own type's colour (see ./boundaryTypes.js — this component
  * never branches on a specific type).
  *
- * - Hover the bar → seeks the Original panel (onSeek) to preview that frame,
- *   with a guide line + timecode tooltip (Phase 2.5a).
+ * Previewing and PLACING are deliberately separate — hovering used to move the
+ * playhead, which meant it ended up wherever the pointer left the bar and you
+ * could never put a boundary where you actually wanted one:
+ *
+ * - Hover the bar → previews that frame in the Original panel (onPreview) with a
+ *   guide line + timecode tooltip. The playhead does NOT move; leaving the bar
+ *   (onPreviewEnd) puts the frame back on the playhead.
+ * - Click the bar, or drag the playhead knob → places the playhead there
+ *   (onCommit). That's the position `c` / "+ Add" cuts at.
  * - Drag a block's left/right edge handle → edits that boundary (onRegionsChange),
  *   snapped to frames and clamped so it can't invert or cross a neighbour
- *   (Phase 2.5b). Dragging also previews the boundary frame.
+ *   (Phase 2.5b). The playhead follows the edge being dragged.
  * - Click a block → selects it, so the toolbar / Delete key can remove it.
  */
 export default function CutTimeline({
@@ -19,7 +26,9 @@ export default function CutTimeline({
   regions,
   fps = 30,
   playhead = 0,
-  onSeek,
+  onCommit,
+  onPreview,
+  onPreviewEnd,
   onRegionsChange,
   selectedId = null,
   onSelectRegion,
@@ -27,9 +36,11 @@ export default function CutTimeline({
   const total = duration || 1;
   const regs = sortRegions(regions);
   const barRef = useRef(null);
-  const draggingRef = useRef(null); // { id, edge } while dragging a handle
+  const draggingRef = useRef(null);        // { id, edge } while dragging a handle
+  const scrubbingRef = useRef(false);      // true while dragging the playhead
   const [hoverX, setHoverX] = useState(null);
   const [dragKey, setDragKey] = useState(null); // `${id}-${edge}` for styling
+  const [scrubbing, setScrubbing] = useState(false);
 
   const snap = (t) => (fps ? Math.round(t * fps) / fps : t);
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -48,10 +59,41 @@ export default function CutTimeline({
   }
 
   function onBarMouseMove(e) {
-    if (draggingRef.current || !onSeek) return; // dragging a handle ≠ scrubbing
+    if (draggingRef.current || scrubbingRef.current) return; // a drag ≠ a hover
     const { x, t } = timeAtClientX(e.clientX);
     setHoverX(x);
-    onSeek(t);
+    onPreview && onPreview(t);
+  }
+
+  function onBarMouseLeave() {
+    setHoverX(null);
+    if (!scrubbingRef.current) onPreviewEnd && onPreviewEnd();
+  }
+
+  // ── placing / scrubbing the playhead ───────────────────────────────────────
+  // Mousedown anywhere on the bar drops the playhead there and starts a scrub;
+  // the listeners live on `window` so the drag survives leaving the bar.
+  function startScrub(e) {
+    if (!onCommit) return;
+    e.preventDefault();          // don't let the browser start a text drag-select
+    scrubbingRef.current = true;
+    setScrubbing(true);
+    setHoverX(null);
+    onCommit(timeAtClientX(e.clientX).t);
+    window.addEventListener("mousemove", onScrubMove);
+    window.addEventListener("mouseup", endScrub);
+  }
+
+  function onScrubMove(e) {
+    if (!scrubbingRef.current || !onCommit) return;
+    onCommit(timeAtClientX(e.clientX).t);
+  }
+
+  function endScrub() {
+    scrubbingRef.current = false;
+    setScrubbing(false);
+    window.removeEventListener("mousemove", onScrubMove);
+    window.removeEventListener("mouseup", endScrub);
   }
 
   // ── edge dragging ──────────────────────────────────────────────────────────
@@ -80,13 +122,13 @@ export default function CutTimeline({
       const hi = seg.end - minW;
       const start = clamp(nt, lo, hi);
       next = { ...seg, start };
-      onSeek && onSeek(start);
+      onCommit && onCommit(start);
     } else {
       const lo = seg.start + minW;
       const hi = index < regs.length - 1 ? regs[index + 1].start : total;
       const end = clamp(nt, lo, hi);
       next = { ...seg, end };
-      onSeek && onSeek(end);
+      onCommit && onCommit(end);
     }
     onRegionsChange(regs.map((r) => (r.id === id ? next : r)));
   }
@@ -140,8 +182,11 @@ export default function CutTimeline({
       <div
         ref={barRef}
         onMouseMove={onBarMouseMove}
-        onMouseLeave={() => setHoverX(null)}
-        onMouseDown={() => onSelectRegion && onSelectRegion(null)}
+        onMouseLeave={onBarMouseLeave}
+        onMouseDown={(e) => {
+          onSelectRegion && onSelectRegion(null);
+          startScrub(e);
+        }}
         style={{
           position: "relative",
           height: 44,
@@ -149,7 +194,7 @@ export default function CutTimeline({
           border: "1px solid #164e45",
           borderRadius: 8,
           overflow: "visible",
-          cursor: onSeek ? "col-resize" : "default",
+          cursor: onCommit ? "col-resize" : "default",
         }}
       >
         {/* rounded clip for the region blocks only, so handles/tooltip can overflow */}
@@ -198,7 +243,7 @@ export default function CutTimeline({
           </span>
         ))}
 
-        {/* Playhead — no transition while hovering/dragging so it feels instant. */}
+        {/* Playhead — no transition while hovering/scrubbing so it feels instant. */}
         <div style={{
           position: "absolute",
           top: -3,
@@ -206,8 +251,8 @@ export default function CutTimeline({
           left: pct(playhead),
           width: 2,
           background: "#2dd4bf",
-          boxShadow: "0 0 6px #2dd4bf",
-          transition: hoverX == null ? "left 0.08s linear" : "none",
+          boxShadow: scrubbing ? "0 0 10px #2dd4bf" : "0 0 6px #2dd4bf",
+          transition: hoverX == null && !scrubbing ? "left 0.08s linear" : "none",
           pointerEvents: "none",
           zIndex: 2,
         }}>
@@ -221,6 +266,30 @@ export default function CutTimeline({
             background: "#2dd4bf",
           }} />
         </div>
+
+        {/* Grab area for the playhead — wider than the 2px line so it's actually
+            catchable. zIndex 2 deliberately sits BELOW the edge handles (3):
+            dragging a boundary parks the playhead right on that edge, so if this
+            won the hit test the edge would become impossible to grab again. */}
+        {onCommit && (
+          <div
+            onMouseDown={(e) => {
+              e.stopPropagation();   // keep the current selection while scrubbing
+              startScrub(e);
+            }}
+            title="Drag to move the playhead"
+            style={{
+              position: "absolute",
+              top: -8,
+              bottom: -8,
+              left: pct(playhead),
+              width: 16,
+              transform: "translateX(-50%)",
+              cursor: scrubbing ? "grabbing" : "grab",
+              zIndex: 2,
+            }}
+          />
+        )}
 
         {/* Hover guide line + timecode tooltip */}
         {hoverX != null && (

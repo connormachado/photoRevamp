@@ -13,14 +13,18 @@ convention used by cleanup.py / stats.py.
 
 Why the date is stamped during the encode
 -----------------------------------------
-Photos' AppleScript dictionary exposes `date` on a media item, but on current
-macOS it is read-only — `set date of ... to ...` fails with a "can't set" error.
-What Photos *does* honor is the QuickTime `creation_time` container tag it reads
-at import. So `render_segments` writes the original's creation date (and GPS)
-into the output file's metadata as part of the same ffmpeg pass that does the
-trimming; by the time Photos sees the file, the date is already correct.
-`import_to_photos` still attempts the AppleScript property afterwards as a
-belt-and-braces pass, and simply reports whether it took.
+Two independent mechanisms set the exported clip's date, and both are used:
+
+1. The QuickTime `creation_time` container tag, written by `render_segments` as
+   part of the same ffmpeg pass that does the trimming. Photos reads it at import,
+   so the clip is already correctly dated before AppleScript is involved.
+2. `set date of media item id ...` afterwards in `import_to_photos`.
+
+(2) was expected to fail as read-only but is in fact accepted on current macOS
+(verified — a real import came back `date_set: True` and Photos reported the
+right timestamp). Keep BOTH: (1) is the one that needs no automation permission
+and survives if the AppleScript vocabulary changes in a future macOS, and they
+agree, so there is no conflict. `import_to_photos` reports which took.
 """
 
 import os
@@ -364,10 +368,10 @@ def import_to_photos(
         return {"success": False, "item_id": None, "date_set": False,
                 "error": "Photos returned no imported item (already in library?)"}
 
-    # Belt-and-braces: try the AppleScript `date` property too. Expected to fail
-    # as read-only on current macOS — the creation_time tag baked in at render
-    # time is what actually lands the clip on the right day, so a failure here is
-    # reported, not raised.
+    # Second date mechanism: the AppleScript `date` property. Verified settable on
+    # current macOS, and it agrees with the creation_time tag baked in at render
+    # time. A failure here is reported rather than raised — the container tag has
+    # already dated the clip correctly on its own.
     date_set = False
     if original_date:
         date_set = _try_set_item_date(item_id, original_date)

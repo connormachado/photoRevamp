@@ -34,42 +34,14 @@ This rule is no longer just prose — it's enforced by git hooks so a drifting s
 | backend | Flask + Python, port 5001 |
 | frontend | React + Vite, port 5173 |
 | device | Apple Silicon Mac (torch device = `mps`) |
+| video | pip-bundled ffmpeg via `imageio_ffmpeg` — **not** a system binary |
 
-## Repo structure
-```
-photoApp/
-├── CLAUDE.md
-├── RODEMAP.md
-├── Makefile               # make start / stop / install / clean
-├── requirements.txt
-├── stats.json             # delete counter + reclaimed bytes — GITIGNORED
-├── .githooks/             # pre-commit + pre-push agent-commit block
-├── backend/
-│   ├── server.py          # routes ONLY — imports logic from the modules below
-│   ├── search.py          # text search, image search, embed_text, embed_image
-│   ├── stats.py           # delete counter + reclaimed-bytes read/write
-│   ├── cleanup.py         # prune missing photos, reveal in Apple Photos
-│   ├── utils.py           # shared helpers: load_model, extract_metadata, file_id
-│   ├── embed_photos.py    # indexing pipeline (standalone, incremental, resumable)
-│   ├── backfill_uuids.py  # one-off: backfill apple_uuid onto existing rows
-│   ├── compute_layout.py  # Graph View: UMAP fit/transform + cluster labels
-│   ├── graph_view.py      # Graph View: /api/graph-view payload builder
-│   ├── video_motion.py    # Climb Cutter: pixel-diff motion detection + ffmpeg cuts
-│   ├── motion_review.py   # Climb Cutter: review queue, verdicts, savings ledger
-│   ├── edit_boundaries.py # Climb Cutter: edit-boundary type registry + export hooks
-│   ├── export_video.py    # Climb Cutter: render a plan → import into Apple Photos
-│   └── test-videos/       # manual fixtures — GITIGNORED
-├── photo_db/              # ChromaDB data + models/ + motion_review/ — GITIGNORED
-└── photo-search/          # Vite/React frontend
-    └── src/
-        ├── App.jsx
-        ├── context/
-        │   └── StatsContext.jsx      # global delete counter state
-        └── components/               # one component per feature
-            └── motion-review/        # Climb Cutter review room sub-app
-                ├── boundaryTypes.js  # edit-boundary registry (display half)
-                └── regions.js        # region math, mirrors edit_boundaries.py
-```
+**There is no `ffmpeg` and no `ffprobe` on PATH.** Every module that touches video
+resolves the binary with `imageio_ffmpeg.get_ffmpeg_exe()` (it has libx264 built in).
+Because `ffprobe` is not bundled at all, video metadata is scraped by parsing
+`ffmpeg -i` **stderr** — see `video_motion.probe` and `export_video.read_source_metadata`.
+Don't write code that shells out to a bare `ffmpeg`/`ffprobe`, and don't add a system
+ffmpeg dependency to fix a bug; the bundled binary is the convention.
 
 There is **no test suite** anywhere in the repo. `backend/test-videos/` holds manual
 fixtures, not tests. Verification is `npm run build` + importing the backend modules;
@@ -114,6 +86,9 @@ and `/reveal`.
 - **`reclaimed_bytes` in `stats.json` is a mirror, not the ledger.** The authoritative per-video record is `photo_db/motion_review/savings.json`; `motion_review._apply_savings` writes there and then mirrors the total into `stats.json`. The review room reads `GET /motion-review/savings` directly, so nothing on the frontend currently consumes the `/stats` copy — keep them in sync anyway.
 - **Edit boundaries live in a two-file registry, and regions are the source of truth.** Every kind of timeline edit is declared once per side, keyed by the same type id string: `backend/edit_boundaries.py` (default params + the apply-on-export hook) and `photo-search/src/components/motion-review/boundaryTypes.js` (label, icon, colour, how it renders). Adding a type = one entry in each; nothing in `CutTimeline`, `motion_review.py` or `export_video.py` branches on a specific type. The wire/disk shape is a **region** — `{id, type, start, end, params}` in seconds — and `cut_segments` / `keep_segments` / `trimmed_duration` are now *derived* from it by running `build_plan`, kept only so the savings ledger and the preview panels keep their old shape. Reviews written before the registry carry only `cut_segments` and upgrade to cut regions on read.
 - **`render_plan` picks its ffmpeg strategy from the plan.** If every piece is a straight copy (speed 1, no filters) it uses the concat demuxer with inpoint/outpoint — the drop-only path, verified byte-identical to the pre-registry renderer. Any piece needing a transform switches the whole render to one `-filter_complex` graph (per-piece `trim`/`setpts` + `atrim`/`asetpts`/`atempo`, then `concat`), because the concat demuxer cannot vary playback rate per entry. `render_segments` is now a thin wrapper over it.
+- **Video re-encode invariants — three ways to silently corrupt an export.** All three were hit and fixed once; don't reintroduce them. (1) **Rotation needs no flag.** On re-encode ffmpeg autorotates, baking the source's display matrix into the pixels — a 1920x1080 iPhone source carrying a -90° matrix comes out a true 1080x1920 portrait file. Adding `-metadata:s:v:0 rotate=` is a no-op in ffmpeg 7 and would double-rotate already-upright footage if it ever started working. (2) **iPhone `.MOV` carries streams this build cannot decode** — a 4-channel `apac` spatial-audio track plus several `mebx` data tracks. Map explicitly (`-map 0:v:0 -map 0:a:0?`); letting ffmpeg auto-map fails the encode outright. (3) **Date and GPS must be re-stamped**, they do not survive a re-encode on their own: `-metadata creation_time=` (prefer the source's `com.apple.quicktime.creationdate`, which is local wall-clock with offset — the timestamp Photos files by) and the ISO-6709 location string.
+- **Saving a clip IS approving it — there is no separate approve button.** The green dome in the review room and the floppy icon in the ReviewStage header both fire `POST /motion-review/export`, which renders → imports into Photos → reveals → *then* records the approval. That order matters: a failed export leaves no phantom approval in the ledger. Reject stays bookkeeping-only via `/motion-review/decision`. **The original is never deleted or modified** — the export is a new asset beside it, and deleting the original is always a manual user decision. Consequently `savings.json` is a *projection* ("if you deleted these originals you'd reclaim X"), not a record of bytes actually freed.
+- **Two independent mechanisms date an exported clip, and both are kept.** The `creation_time` container tag written during the render, and `set date of media item id ...` via AppleScript after import. The second was expected to be read-only but is settable on current macOS (verified); they agree. Keep both — the container tag needs no automation permission and survives an AppleScript vocabulary change.
 - **Chip queries are the single source of truth.** The six junk-cull chips live in the exported `CHIPS` array in `SearchChips.jsx`. Junk Hunt re-imports `CHIPS` and fires all of them in parallel — edit the list in one place. Each chip is `{emoji, label, query}` with the emoji as its own field; only `query` goes to CLIP.
 - **"Show in Photos" auto-bumps the delete counter.** On a successful `/reveal`, `OpenInPhotosButton` calls `incrementDeleteCount()` (an optimistic "about to delete" proxy). If the counter drifts up unexpectedly, this is why. The shared `incrementDeleteCount`/`decrementDeleteCount` come from `StatsContext`, which wraps `App`'s returned tree.
 - **`/reveal` takes a `file_id`, but reveals by `apple_uuid`.** Photos are indexed from the derivatives cache, whose paths Photos.app doesn't know. The route looks the row up by `id`, pulls `apple_uuid` from metadata, and hands that to `cleanup.reveal_in_photos`, which runs `spotlight media item id` via AppleScript. Never try to reveal by filename or path.
@@ -152,6 +127,10 @@ Library is ~49.6k photos indexed. Repo is consolidated on a single `main` branch
   registry, regions as the source of truth, type picker toolbar + add (`c`) / remove
   (`delete`), type-agnostic export via `build_plan` → `render_plan`. "cut" is the only
   registered type so far; the render output is byte-identical to before the refactor.
+- ✅ Climb Cutter export to Photos — `export_video.py` + `POST /motion-review/export`,
+  equal-sized red/green domes, header save icon. Smoke-tested end to end on one real
+  clip: 59.18s → 32.93s, 176 MB → 37 MB, landed in Photos upright at the original's
+  date (Feb 11 2026 9:31 PM) with GPS preserved and the original untouched.
 
 **Known gaps (verified absent, don't assume these exist):**
 - ❌ Graph View Phase 4 (zoom / LOD) and Phase 5 (overlap nudge) — not started. `GraphView.jsx`
@@ -176,5 +155,5 @@ Library is ~49.6k photos indexed. Repo is consolidated on a single `main` branch
    needs already exists and is smoke-tested; note that a sped-up piece currently lands at a
    multiplied frame rate, so its hook should pin `fps` in the piece's `vf`.
 2. Expand Climb Cutter with further features (current build focus).
-2. Graph View polish — refit UMAP on the full library, then Phase 3 cosmetics.
-3. Real video semantic search (wanted soon, larger effort).
+3. Graph View polish — refit UMAP on the full library, then Phase 3 cosmetics.
+4. Real video semantic search (wanted soon, larger effort).
