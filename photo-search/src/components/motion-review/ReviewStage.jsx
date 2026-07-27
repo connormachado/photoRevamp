@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import SyncedPanels from "./SyncedPanels";
 import CutTimeline from "./CutTimeline";
 import BoundaryToolbar from "./BoundaryToolbar";
 import SaveIcon from "./SaveIcon";
 import { fmtDur, formatBytes } from "./format";
-import { complementSegments } from "./segments";
 import {
   regionsToCuts, regionsEqual, outputDuration, addRegionAt, removeRegion, regionsFromCuts,
+  buildPlan,
 } from "./regions";
 import { DEFAULT_TYPE_ID } from "./boundaryTypes";
 
@@ -97,14 +97,33 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
   const originalRef = useRef(null);      // the Original panel's <video>, for seeking
   const playheadRef = useRef(0);         // mirror of playhead for the keydown closure
 
+  // Where the segment panels are asked to park, kept SEPARATE from `playhead`.
+  // The playhead moves continuously while something plays; this only moves when
+  // the playhead is deliberately placed. Handing the live playhead to the panels
+  // made the two idle ones seek ~4x a second, which starved the decoder and made
+  // the playing panel choppy. `seq` rather than the time so that re-placing the
+  // playhead where it already sits still counts as a request.
+  const [seekTarget, setSeekTarget] = useState({ t: 0, seq: 0 });
+  const seekSeqRef = useRef(0);
+
   const duration = video ? video.original_duration || 0 : 0;
   const fps = video && video.fps ? video.fps : 30;
 
   // Live-derived from the (editable) region list, so drags update instantly.
   // Regions are the source of truth; cuts/keeps are what the preview panels and
   // the savings estimate still speak — same derivation the backend runs.
-  const cuts = regionsToCuts(regions || []);
-  const keeps = complementSegments(cuts, duration);
+  //
+  // MEMOISED ON PURPOSE. These arrays are props of the preview panels, and this
+  // component re-renders on every `timeupdate` of a playing panel. Rebuilding
+  // them each time handed the panels a new array identity several times a
+  // second, which reset their playback — see SegmentVideo's reset effect.
+  //
+  // `cuts` still feeds the Removed/timelapse panel and the savings estimate,
+  // which only care about footage that disappears. `keeps` is now the full edit
+  // PLAN — pieces carrying their own speed — so the Trimmed panel plays what the
+  // export will actually produce rather than only knowing how to skip cuts.
+  const cuts = useMemo(() => regionsToCuts(regions || []), [regions]);
+  const keeps = useMemo(() => buildPlan(regions || [], duration), [regions, duration]);
   const trimmedDuration = outputDuration(regions || [], duration);
   const savedBytes = duration > 0 && video && video.source_size_bytes
     ? Math.round(video.source_size_bytes * (1 - trimmedDuration / duration))
@@ -134,6 +153,8 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
     setPreview(null);
     playheadRef.current = clamped;
     setPlayhead(clamped);
+    seekSeqRef.current += 1;
+    setSeekTarget({ t: clamped, seq: seekSeqRef.current });
   }, [duration, fps, seekVideo]);
 
   // PREVIEW a frame under the cursor — video moves, playhead does not.
@@ -158,6 +179,14 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
     playheadRef.current = t;
     setPlayhead(t);
   }, []);
+
+  // A panel was paused by hand: place the playhead where it stopped, which also
+  // brings the other panels there. This is the whole reason the panels can stop
+  // chasing each other frame by frame — the set only needs to agree when
+  // something is actually standing still.
+  const onPlaybackStop = useCallback((t) => {
+    commitPlayhead(t);
+  }, [commitPlayhead]);
 
   // Drop a boundary of the ACTIVE type at the playhead. If the playhead already
   // sits inside one, select that instead of stacking a second on top of it.
@@ -248,12 +277,20 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
       </div>
 
       {/* Three synced panels — the Original doubles as the scrub viewer */}
-      <SyncedPanels video={video} onTime={onPlaybackTime} videoRef={originalRef} cuts={cuts} keeps={keeps} />
+      <SyncedPanels
+        video={video}
+        onTime={onPlaybackTime}
+        videoRef={originalRef}
+        cuts={cuts}
+        keeps={keeps}
+        seekTo={seekTarget}
+        onStop={onPlaybackStop}
+      />
 
       {/* Scrub + edit timeline + frame readout */}
       <div style={{ marginTop: 24 }}>
         <div style={{ fontSize: 11, color: "#5eead4aa", letterSpacing: "0.05em", marginBottom: 6 }}>
-          click to place the playhead · drag it to scrub · hover to preview · ←/→ step 1 frame · shift+←/→ step 10 · c adds a cut there · click a block then delete to remove
+          click to place the playhead · drag it to scrub · hover to preview · ←/→ step 1 frame · shift+←/→ step 10 · c adds a boundary of the active type there · click a block then delete to remove
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, gap: 16, flexWrap: "wrap" }}>
           <BoundaryToolbar

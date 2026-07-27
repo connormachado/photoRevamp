@@ -96,6 +96,53 @@ def _cut_apply(region: dict, ctx: dict) -> list:
     return []
 
 
+# ── speed ─────────────────────────────────────────────────────────────────────
+# params: {"direction": "up"|"down", "magnitude": float}
+# Direction comes ONLY from the toggle; magnitude is always an unsigned number.
+#   up   N  →  speed = N     → setpts=PTS/N   (N× faster)
+#   down N  →  speed = 1/N   → setpts=PTS*N   (N× slower)
+# Magnitude 1.0 is a deliberate no-op in either direction, which is why the UI
+# clamps its step-down there instead of walking below 1.
+
+SPEED_MIN_MAGNITUDE = 1.0
+SPEED_MAX_MAGNITUDE = 20.0
+
+
+def _effective_speed(params: dict) -> float:
+    """The playback-rate multiplier a speed region's params ask for."""
+    try:
+        mag = float((params or {}).get("magnitude", 2.0))
+    except (TypeError, ValueError):
+        mag = 2.0
+    mag = max(SPEED_MIN_MAGNITUDE, min(SPEED_MAX_MAGNITUDE, mag))
+    return mag if (params or {}).get("direction", "up") != "down" else 1.0 / mag
+
+
+def _speed_apply(region: dict, ctx: dict) -> list:
+    """Speed: the span survives whole, retimed by one Piece.
+
+    At magnitude 1 this returns a PLAIN piece on purpose — a speed region parked
+    at 1× must not drag the whole render off the fast concat-demuxer path.
+
+    The `fps` pin is not cosmetic. setpts rescales timestamps, so a 2× piece
+    lands at twice the source frame rate and a slowed piece at half; forcing the
+    source fps afterwards decimates/duplicates back to a uniform rate so the
+    concat filter is handed consistent streams.
+    """
+    start, end = float(region["start"]), float(region["end"])
+    speed = _effective_speed(region.get("params") or {})
+    if abs(speed - 1.0) < 1e-9:
+        return [Piece(start, end)]
+    fps = ctx.get("fps")
+    vf = (f"fps={float(fps):.6g}",) if fps else ()
+    return [Piece(start, end, speed=speed, vf=vf)]
+
+
+def _speed_output_duration(region: dict) -> float:
+    span = max(0.0, float(region["end"]) - float(region["start"]))
+    return span / _effective_speed(region.get("params") or {})
+
+
 REGISTRY: dict[str, BoundaryType] = {
     "cut": BoundaryType(
         id="cut",
@@ -105,7 +152,15 @@ REGISTRY: dict[str, BoundaryType] = {
         apply_on_export=_cut_apply,
         output_duration=lambda region: 0.0,
     ),
-    # Next entry goes here (Prompt 2: "speed"). Nothing else needs to change.
+    "speed": BoundaryType(
+        id="speed",
+        label="Speed",
+        default_params={"direction": "up", "magnitude": 2.0},
+        removes_footage=False,
+        apply_on_export=_speed_apply,
+        output_duration=_speed_output_duration,
+    ),
+    # Next entry goes here. Nothing else needs to change.
 }
 
 DEFAULT_TYPE_ID = "cut"
@@ -237,15 +292,21 @@ def regions_equal(a: list, b: list) -> bool:
 
 # ── The type-agnostic pipeline ────────────────────────────────────────────────
 
-def build_plan(regions: list, duration: float, source_path: str = "") -> list[Piece]:
+def build_plan(regions: list, duration: float, source_path: str = "",
+               fps: float | None = None) -> list[Piece]:
     """Turn a region list into the ordered list of output Pieces.
 
     Walks [0, duration]: every gap between regions is untouched footage and emits
     a plain Piece; every region hands off to its type's apply_on_export hook.
     This is the whole extension point — the renderer never branches on type.
+
+    *fps* is the source's frame rate (from `video_motion.probe`). It is optional
+    because it only matters to hooks that retime footage — "speed" pins it so a
+    setpts'd piece doesn't reach the concat filter at a multiplied frame rate.
     """
     regs = sorted(regions or [], key=lambda r: float(r["start"]))
-    ctx = {"duration": float(duration), "source_path": source_path, "regions": regs}
+    ctx = {"duration": float(duration), "source_path": source_path,
+           "regions": regs, "fps": fps}
 
     plan: list[Piece] = []
     cursor = 0.0

@@ -20,7 +20,14 @@ import { sortRegions } from "./regions";
  *   snapped to frames and clamped so it can't invert or cross a neighbour
  *   (Phase 2.5b). The playhead follows the edge being dragged.
  * - Click a block → selects it, so the toolbar / Delete key can remove it.
+ *
+ * Types get two render slots, and never a special case in here: `renderBlock`
+ * draws inside the clipped rounded track, `renderOverlay` draws in the unclipped
+ * layer above it (where a type's interactive chrome goes, since a region is
+ * often only a few pixels wide). Both receive the same per-region `ctx`.
  */
+const BAR_HEIGHT = 44;
+
 export default function CutTimeline({
   duration,
   regions,
@@ -140,6 +147,26 @@ export default function CutTimeline({
     window.removeEventListener("mouseup", endDrag);
   }
 
+  // ── what a type's render slots get to work with ────────────────────────────
+  // `onParamsChange` is how a type edits its own region (the speed magnitude,
+  // say) without this component knowing what the params mean.
+  function updateParams(id, patch) {
+    if (!onRegionsChange) return;
+    onRegionsChange(regs.map((r) =>
+      r.id === id ? { ...r, params: { ...(r.params || {}), ...patch } } : r));
+  }
+
+  const blockCtx = (seg) => ({
+    selected: selectedId === seg.id,
+    pct,
+    fmt,
+    fps,
+    duration: total,
+    barHeight: BAR_HEIGHT,
+    onParamsChange: updateParams,
+    onSelectRegion,
+  });
+
   function Handle({ id, edge, t, color }) {
     const active = dragKey === `${id}-${edge}`;
     return (
@@ -189,7 +216,7 @@ export default function CutTimeline({
         }}
         style={{
           position: "relative",
-          height: 44,
+          height: BAR_HEIGHT,
           background: "#0a1f1c",
           border: "1px solid #164e45",
           borderRadius: 8,
@@ -202,8 +229,7 @@ export default function CutTimeline({
           {regs.map((seg) => {
             const type = getType(seg.type);
             const selected = selectedId === seg.id;
-            const ctx = { selected, pct, fmt, fps, duration: total };
-            if (type.renderBlock) return type.renderBlock(seg, ctx);
+            if (type.renderBlock) return type.renderBlock(seg, blockCtx(seg));
             return (
               <div
                 key={seg.id}
@@ -234,6 +260,14 @@ export default function CutTimeline({
             );
           })}
         </div>
+
+        {/* Type chrome that must escape the clip above — a speed region's
+            controls are ~110px wide while the region itself may be ~25px, so
+            this layer is unclipped and the cluster is allowed to spill past the
+            block's edges. Deliberately rendered BEFORE the handles: at equal
+            zIndex the later DOM node wins the hit test, so the edge handles stay
+            grabbable even where an overlay covers them. */}
+        {regs.map((seg) => getType(seg.type).renderOverlay?.(seg, blockCtx(seg)))}
 
         {/* drag handles on each region edge (above the clip so they're fully grabbable) */}
         {onRegionsChange && regs.map((seg) => (

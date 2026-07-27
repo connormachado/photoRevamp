@@ -38,6 +38,23 @@ SAVINGS_PATH = MOTION_DIR / "savings.json"  # running pool of reclaimed bytes
 
 VALID_VERDICTS = {"reject", "approve"}
 
+# Preview-proxy encode settings. The suffix carries a VERSION: bump it whenever
+# the encode below changes and every cached proxy re-renders on next open, which
+# a plain mtime check can't do (the source file hasn't moved).
+PREVIEW_SUFFIX = "_h264_v2.mp4"
+PREVIEW_LEGACY_SUFFIXES = ("_h264.mp4",)
+
+# Cap the LONG side at 1280 — the panels are ~350px wide on screen, so a full
+# 1080x1920 proxy was ~2.8x more pixels than anything could show, paid for on
+# every decoded frame. `-2` keeps the other side even (h264 requires it).
+# NOTE: this is a `-vf` scale, not `-filter_complex` — verified NOT to copy the
+# source display matrix onto the output, so portrait clips stay upright with no
+# rotation flag. (Don't assume; the export's filter path behaves differently —
+# see the rotation invariant in CLAUDE.md.)
+PREVIEW_SCALE = (
+    "scale='if(gt(iw,ih),min(1280,iw),-2)':'if(gt(iw,ih),-2,min(1280,ih))'"
+)
+
 
 # ── Small IO helpers ──────────────────────────────────────────────────────────
 
@@ -121,7 +138,8 @@ def _derive(regions: list, prop: dict) -> dict:
     correct for boundary types that transform footage instead of dropping it.
     """
     orig_dur = prop.get("original_duration", 0)
-    plan = eb.build_plan(regions, orig_dur, prop.get("source_path", ""))
+    plan = eb.build_plan(regions, orig_dur, prop.get("source_path", ""),
+                         fps=(prop.get("probe") or {}).get("fps"))
     return {
         "plan": plan,
         "cut_segments": eb.regions_to_cuts(regions),
@@ -244,7 +262,7 @@ def source_h264_path(video_id: str) -> Path:
         raise FileNotFoundError(f"source video missing for {video_id}: {source_path}")
 
     PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-    out = PREVIEW_DIR / f"{video_id}_h264.mp4"
+    out = PREVIEW_DIR / f"{video_id}{PREVIEW_SUFFIX}"
 
     # Reuse the cache unless the source is newer than the transcode.
     if out.exists() and out.stat().st_mtime >= os.path.getmtime(source_path):
@@ -253,7 +271,18 @@ def source_h264_path(video_id: str) -> Path:
     tmp = out.with_suffix(".tmp.mp4")
     cmd = [
         FFMPEG, "-y", "-i", source_path,
+        # iPhone .MOV carries streams this build can't decode (4-channel `apac`
+        # spatial audio, `mebx` data tracks) — map explicitly, same as the export.
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", PREVIEW_SCALE,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        # SHORT GOP. The review panels seek constantly — every cut boundary and
+        # every scrub is `video.currentTime = x`, and a seek costs the browser a
+        # decode from the previous keyframe. x264's default keyint of 250 frames
+        # put those ~4.2s apart at 60fps, so each skip stalled for up to 4s of
+        # decoded video. At 30 frames they're 0.5s apart: ~8x cheaper seeks, and
+        # the file gets SMALLER anyway thanks to the downscale above.
+        "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
         "-c:a", "aac",
         "-movflags", "+faststart",   # lets the browser start before full download
         str(tmp),
@@ -264,6 +293,12 @@ def source_h264_path(video_id: str) -> Path:
             tmp.unlink()
         raise RuntimeError(f"ffmpeg transcode failed: {proc.stderr[-500:]}")
     os.replace(tmp, out)
+    # Drop the proxy an older PREVIEW_SUFFIX left behind — it's pure cache, and
+    # nothing will ever ask for it again.
+    for old in PREVIEW_LEGACY_SUFFIXES:
+        stale = PREVIEW_DIR / f"{video_id}{old}"
+        if stale.exists():
+            stale.unlink()
     return out
 
 
@@ -429,7 +464,8 @@ def export_to_photos(
 
     # The plan is what each boundary type said to do with its span; the renderer
     # just executes it, so this stays the same call for every future type.
-    plan = eb.build_plan(final_regions, prop.get("original_duration", 0), source_path)
+    plan = eb.build_plan(final_regions, prop.get("original_duration", 0), source_path,
+                         fps=(prop.get("probe") or {}).get("fps"))
     if not plan:
         raise ValueError("the cuts cover the whole video — there is nothing to export")
 

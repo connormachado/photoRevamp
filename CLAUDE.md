@@ -84,11 +84,41 @@ and `/reveal`.
 
 - **`GET /stats` is overloaded.** It returns one merged payload, `{total, deleted, reclaimed_bytes}`: `total` is the live `collection.count()` (header "X photos indexed"), the other two come from `stats.py` reading `stats.json`. Don't repurpose `/stats` for just one of them — both the header and `DeleteCounter` read from it. The delete counter is bumped via `POST /stats/increment` with `{delta: ±1}`.
 - **`reclaimed_bytes` in `stats.json` is a mirror, not the ledger.** The authoritative per-video record is `photo_db/motion_review/savings.json`; `motion_review._apply_savings` writes there and then mirrors the total into `stats.json`. The review room reads `GET /motion-review/savings` directly, so nothing on the frontend currently consumes the `/stats` copy — keep them in sync anyway.
-- **Edit boundaries live in a two-file registry, and regions are the source of truth.** Every kind of timeline edit is declared once per side, keyed by the same type id string: `backend/edit_boundaries.py` (default params + the apply-on-export hook) and `photo-search/src/components/motion-review/boundaryTypes.js` (label, icon, colour, how it renders). Adding a type = one entry in each; nothing in `CutTimeline`, `motion_review.py` or `export_video.py` branches on a specific type. The wire/disk shape is a **region** — `{id, type, start, end, params}` in seconds — and `cut_segments` / `keep_segments` / `trimmed_duration` are now *derived* from it by running `build_plan`, kept only so the savings ledger and the preview panels keep their old shape. Reviews written before the registry carry only `cut_segments` and upgrade to cut regions on read.
-- **`render_plan` picks its ffmpeg strategy from the plan.** If every piece is a straight copy (speed 1, no filters) it uses the concat demuxer with inpoint/outpoint — the drop-only path, verified byte-identical to the pre-registry renderer. Any piece needing a transform switches the whole render to one `-filter_complex` graph (per-piece `trim`/`setpts` + `atrim`/`asetpts`/`atempo`, then `concat`), because the concat demuxer cannot vary playback rate per entry. `render_segments` is now a thin wrapper over it.
-- **Video re-encode invariants — three ways to silently corrupt an export.** All three were hit and fixed once; don't reintroduce them. (1) **Rotation needs no flag.** On re-encode ffmpeg autorotates, baking the source's display matrix into the pixels — a 1920x1080 iPhone source carrying a -90° matrix comes out a true 1080x1920 portrait file. Adding `-metadata:s:v:0 rotate=` is a no-op in ffmpeg 7 and would double-rotate already-upright footage if it ever started working. (2) **iPhone `.MOV` carries streams this build cannot decode** — a 4-channel `apac` spatial-audio track plus several `mebx` data tracks. Map explicitly (`-map 0:v:0 -map 0:a:0?`); letting ffmpeg auto-map fails the encode outright. (3) **Date and GPS must be re-stamped**, they do not survive a re-encode on their own: `-metadata creation_time=` (prefer the source's `com.apple.quicktime.creationdate`, which is local wall-clock with offset — the timestamp Photos files by) and the ISO-6709 location string.
+- **Edit boundaries live in a two-file registry, and regions are the source of truth.** Every kind of timeline edit is declared once per side, keyed by the same type id string: `backend/edit_boundaries.py` (default params + the apply-on-export hook) and `photo-search/src/components/motion-review/boundaryTypes.js` (label, icon, colour, how it renders). Adding a type = one entry in each; nothing in `CutTimeline`, `motion_review.py` or `export_video.py` branches on a specific type. A type has two optional render slots: `renderBlock` draws inside the timeline's clipped rounded track, `renderOverlay` draws in the unclipped layer above it — interactive chrome belongs in the overlay, because a region is often only ~25px wide on screen while its controls are ~110px. The wire/disk shape is a **region** — `{id, type, start, end, params}` in seconds — and `cut_segments` / `keep_segments` / `trimmed_duration` are now *derived* from it by running `build_plan`, kept only so the savings ledger and the preview panels keep their old shape. Reviews written before the registry carry only `cut_segments` and upgrade to cut regions on read.
+- **`render_plan` picks its ffmpeg strategy from the plan.** If every piece is a straight copy (speed 1, no filters) it uses the concat demuxer with inpoint/outpoint — the drop-only path, verified byte-identical to the pre-registry renderer. Any piece needing a transform switches the whole render to one `-filter_complex` graph (per-piece `trim`/`setpts` + `atrim`/`asetpts`/`atempo`, then `concat`), because the concat demuxer cannot vary playback rate per entry. That path then needs a second stream-copy pass (`_strip_display_matrix`) — see the rotation invariant below. `render_segments` is now a thin wrapper over it.
+- **Video re-encode invariants — four ways to silently corrupt an export.** All four were hit and fixed once; don't reintroduce them. (1) **Rotation needs no flag.** On re-encode ffmpeg autorotates, baking the source's display matrix into the pixels — a 1920x1080 iPhone source carrying a -90° matrix comes out a true 1080x1920 portrait file. Adding `-metadata:s:v:0 rotate=` is a no-op in ffmpeg 7 (re-verified) and would double-rotate already-upright footage if it ever started working. (1b) **…but the `-filter_complex` path ALSO copies the matrix onto the output**, so the already-upright pixels get rotated a second time and the clip lands sideways in Photos. The concat-demuxer path does not, which is why drop-only exports were always fine and this only surfaced with the first transforming boundary type. `export_video._strip_display_matrix` fixes it with a stream-copy pass using `-display_rotation 0` on the input — the only flag that clears it (`-metadata:s:v:0 rotate=0`, `-map_metadata:s:v:0 -1` and `-noautorotate` were all tried and all leave it). That remux **drops `creation_time`** (GPS survives), so the date/GPS tags are stamped on the remux rather than the encode. (2) **iPhone `.MOV` carries streams this build cannot decode** — a 4-channel `apac` spatial-audio track plus several `mebx` data tracks. Map explicitly (`-map 0:v:0 -map 0:a:0?`); letting ffmpeg auto-map fails the encode outright. (3) **Date and GPS must be re-stamped**, they do not survive a re-encode on their own: `-metadata creation_time=` (prefer the source's `com.apple.quicktime.creationdate`, which is local wall-clock with offset — the timestamp Photos files by) and the ISO-6709 location string.
 - **Saving a clip IS approving it — there is no separate approve button.** The green dome in the review room and the floppy icon in the ReviewStage header both fire `POST /motion-review/export`, which renders → imports into Photos → reveals → *then* records the approval. That order matters: a failed export leaves no phantom approval in the ledger. Reject stays bookkeeping-only via `/motion-review/decision`. **The original is never deleted or modified** — the export is a new asset beside it, and deleting the original is always a manual user decision. Consequently `savings.json` is a *projection* ("if you deleted these originals you'd reclaim X"), not a record of bytes actually freed.
 - **Two independent mechanisms date an exported clip, and both are kept.** The `creation_time` container tag written during the render, and `set date of media item id ...` via AppleScript after import. The second was expected to be read-only but is settable on current macOS (verified); they agree. Keep both — the container tag needs no automation permission and survives an AppleScript vocabulary change.
+- **The preview panels approximate speed; the render is the truth.** `SegmentVideo`
+  shows a speed region by setting `playbackRate`, which browsers cap at 16 (and which
+  drops audio well before that), while a speed magnitude goes to 20. A 20× region
+  therefore previews at 16× but exports at a true 20×. Also: seeking a segment panel
+  to exactly a piece's `end` instantly trips the end-of-list check in `onTimeUpdate`
+  and wraps playback to zero — the `seekTo` mapping parks 0.05s inside the piece to
+  avoid it.
+- **A seek is the expensive operation in the review room, and two things were doing it
+  constantly.** Preview smoothness is governed by seek count × seek cost, not by decode
+  throughput. (1) `ReviewStage` keeps `playhead` (moves continuously, drives the
+  timeline) SEPARATE from `seekTarget` (`{t, seq}`, bumped only by `commitPlayhead`).
+  Feeding the live playhead to the panels made both idle ones run
+  `video.currentTime = …` on every `timeupdate` of whichever panel was playing — ~4
+  seeks/sec, measured — and that starved the decoder the playing panel was using. The
+  panels re-sync once, on a *user* pause, via `onStop` → `commitPlayhead`; `SegmentVideo`'s
+  `autoPauseRef` keeps the automatic end-of-list rewind from being reported as one.
+  Keyed on `seq` rather than the time so re-placing the playhead where it already sits
+  still counts. (2) The preview proxy is encoded with `-g 30`; x264's default keyint of
+  250 frames put keyframes ~4.2s apart at 60fps, so every cut skip decoded up to 4s of
+  video to land one frame. Measured after: 0 sibling seeks during playback, seam seeks
+  resolving in 8–21ms.
+- **The preview proxy is versioned by filename, and is NOT the export path.**
+  `motion_review.PREVIEW_SUFFIX` (`_h264_v2.mp4`) is the cache-buster: the mtime check
+  can't notice that the *encode settings* changed, so bump the suffix whenever they do
+  and stale files get unlinked on next open. The proxy caps its long side at 1280
+  (`PREVIEW_SCALE`) because the panels are ~350px wide — this is a display-only
+  downscale and never touches an export, which always re-reads the original. That `-vf`
+  scale was verified NOT to copy the source display matrix (portrait stays upright with
+  no rotation flag), unlike the export's `-filter_complex` path — see the rotation
+  invariant above, and don't assume the two behave alike.
 - **Chip queries are the single source of truth.** The six junk-cull chips live in the exported `CHIPS` array in `SearchChips.jsx`. Junk Hunt re-imports `CHIPS` and fires all of them in parallel — edit the list in one place. Each chip is `{emoji, label, query}` with the emoji as its own field; only `query` goes to CLIP.
 - **"Show in Photos" auto-bumps the delete counter.** On a successful `/reveal`, `OpenInPhotosButton` calls `incrementDeleteCount()` (an optimistic "about to delete" proxy). If the counter drifts up unexpectedly, this is why. The shared `incrementDeleteCount`/`decrementDeleteCount` come from `StatsContext`, which wraps `App`'s returned tree.
 - **`/reveal` takes a `file_id`, but reveals by `apple_uuid`.** Photos are indexed from the derivatives cache, whose paths Photos.app doesn't know. The route looks the row up by `id`, pulls `apple_uuid` from metadata, and hands that to `cleanup.reveal_in_photos`, which runs `spotlight media item id` via AppleScript. Never try to reveal by filename or path.
@@ -125,8 +155,22 @@ Library is ~49.6k photos indexed. Repo is consolidated on a single `main` branch
   draggable cut boundaries, verdicts persisted, reclaimed-bytes savings ledger
 - ✅ Climb Cutter edit-boundary framework — `edit_boundaries.py` + `boundaryTypes.js`
   registry, regions as the source of truth, type picker toolbar + add (`c`) / remove
-  (`delete`), type-agnostic export via `build_plan` → `render_plan`. "cut" is the only
-  registered type so far; the render output is byte-identical to before the refactor.
+  (`delete`), type-agnostic export via `build_plan` → `render_plan`. The drop-only
+  render output is byte-identical to before the refactor (md5-checked).
+- ✅ Climb Cutter "speed" boundary type — green draggable region carrying a typeable
+  magnitude, a 🐇/🐢 direction toggle and −/+ 0.5 steppers (`SpeedBlock.jsx` via the
+  new `renderOverlay` slot). rabbit N = N× faster, turtle N = N× slower; magnitude
+  clamps to [1, 20] and 1 is a no-op that stays on the fast render path. Audio is
+  kept and time-stretched with the existing `atempo` chain. Cut and speed compose.
+  Render-verified frame-by-frame against a burned-in counter, and on a real iPhone
+  `.MOV` (upright, date + GPS intact, stereo audio).
+- ✅ Preview parity for the Trimmed panel — `regions.buildPlan` mirrors
+  `edit_boundaries.build_plan` via a per-type `toPieces` hook, and `SegmentVideo`
+  varies `playbackRate` per piece, so the panel plays what the export will produce
+  instead of only knowing how to skip cuts. `regions.outputDuration` is now derived
+  from the same plan, so the header and the panel can't drift apart again.
+  Browser-verified: rate flips 1 → 2 at the region boundary and back, turtle gives
+  0.5, cuts still skip in the same pass.
 - ✅ Climb Cutter export to Photos — `export_video.py` + `POST /motion-review/export`,
   equal-sized red/green domes, header save icon. Smoke-tested end to end on one real
   clip: 59.18s → 32.93s, 176 MB → 37 MB, landed in Photos upright at the original's
@@ -150,10 +194,9 @@ Library is ~49.6k photos indexed. Repo is consolidated on a single `main` branch
   `react-refresh/only-export-components`). The build is unaffected.
 
 **Immediate next:**
-1. Climb Cutter "speed" boundary type — one entry in `edit_boundaries.py` (hook returns a
-   `Piece` with `speed=K`) + one in `boundaryTypes.js`. The `-filter_complex` render path it
-   needs already exists and is smoke-tested; note that a sped-up piece currently lands at a
-   multiplied frame rate, so its hook should pin `fps` in the piece's `vf`.
+1. Speed boundaries are render-verified and preview-verified but **not yet exported to
+   Photos end to end** — the first real `POST /motion-review/export` with a speed
+   region is still pending.
 2. Expand Climb Cutter with further features (current build focus).
 3. Graph View polish — refit UMAP on the full library, then Phase 3 cosmetics.
 4. Real video semantic search (wanted soon, larger effort).

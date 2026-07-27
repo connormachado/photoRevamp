@@ -57,8 +57,16 @@ const plainVideoStyle = { width: "100%", height: "100%", objectFit: "contain", b
  * playhead moves. The second argument matters: `timeupdate` also fires for
  * programmatic seeks (scrub previews, segment resets), and the timeline ignores
  * those — only real playback is allowed to move the playhead.
+ *
+ * `seekTo` is the PLACED playhead flowing the other way — `{t, seq}`, bumped
+ * only when the playhead is put somewhere — so all three panels park on the same
+ * frame and playback can start from there on any of them. The Original is seeked
+ * by the parent through `videoRef`; the two segment panels take it as a prop and
+ * map it onto their own segment list. `onStop` reports where a segment panel was
+ * paused, which is when the set re-syncs; see SegmentVideo for why that isn't
+ * done continuously.
  */
-export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, keeps: keepsProp }) {
+export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, keeps: keepsProp, seekTo = null, onStop }) {
   const src = video.source_exists ? `${API}/motion-review/source?id=${video.video_id}` : null;
   const cuts = cutsProp || video.cut_segments || [];
   const keeps = keepsProp || video.keep_segments || [];
@@ -90,13 +98,13 @@ export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, 
 
       <Panel label="Removed · timelapse" accent="#f87171" aspect={aspect}>
         {src && cuts.length
-          ? <SegmentVideo src={src} segments={cuts} rate={4} onTime={onTime} />
+          ? <SegmentVideo src={src} segments={cuts} rate={4} onTime={onTime} seekTo={seekTo} onStop={onStop} />
           : <Placeholder text={src ? "No sections removed" : "Source unavailable"} />}
       </Panel>
 
       <Panel label="Trimmed result" accent={ACCENT} aspect={aspect}>
         {src && keeps.length
-          ? <SegmentVideo src={src} segments={keeps} rate={1} onTime={onTime} />
+          ? <SegmentVideo src={src} segments={keeps} rate={1} onTime={onTime} seekTo={seekTo} onStop={onStop} />
           : <Placeholder text="Source unavailable" />}
       </Panel>
     </div>

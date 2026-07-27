@@ -147,7 +147,9 @@ def render_plan(
       is the drop-only path the Climb Cutter has always used, byte for byte.
     * **filtered** — some piece needs a transform. Falls back to a single input
       plus a filter_complex graph (trim/setpts per piece, concat at the end),
-      since the concat demuxer cannot vary playback rate per entry.
+      since the concat demuxer cannot vary playback rate per entry. This path
+      needs a second, stream-copy pass to strip a leftover display matrix — see
+      `_strip_display_matrix`.
     """
     src = Path(source_path)
     if not src.exists():
@@ -163,10 +165,18 @@ def render_plan(
     meta = metadata or {}
     tmp_dir = Path(tempfile.mkdtemp(prefix="vx_render_"))
     try:
-        if all(p.is_plain for p in pieces):
+        plain = all(p.is_plain for p in pieces)
+        if plain:
             cmd = _concat_demuxer_cmd(src, pieces, tmp_dir)
+            # The concat path writes the finished file directly, metadata and
+            # all — this command must stay byte-for-byte what it has always been.
+            encode_target = out_path
         else:
             cmd = _filter_graph_cmd(src, pieces)
+            # The filtered path encodes to a temp file first; the metadata is
+            # stamped by the stream-copy pass below, because a `-c copy` remux
+            # drops creation_time (verified) and would throw it away.
+            encode_target = tmp_dir / "filtered.mp4"
 
         # ── shared encoder tail ───────────────────────────────────────────────
         cmd += [
@@ -178,24 +188,69 @@ def render_plan(
         # Rotation needs no flag: on RE-ENCODE ffmpeg autorotates, baking the
         # source's display matrix into the pixels (verified — a 1920x1080 source
         # carrying a -90° matrix comes out as a true 1080x1920 portrait file).
-        # Do NOT add -metadata:s:v:0 rotate= here; if it ever stopped being a
-        # no-op it would rotate footage that is already upright.
-        if meta.get("date"):
-            cmd += ["-metadata", f"creation_time={meta['date']}"]
-        if meta.get("gps"):
-            cmd += [
-                "-metadata", f"com.apple.quicktime.location.ISO6709={meta['gps']}",
-                "-metadata", f"location={meta['gps']}",
-            ]
-        cmd.append(str(out_path))
+        # Do NOT add -metadata:s:v:0 rotate= here; it is a no-op in ffmpeg 7
+        # (re-verified), and if it ever started working it would rotate footage
+        # that is already upright.
+        if plain:
+            cmd += _metadata_args(meta)
+        cmd.append(str(encode_target))
 
         proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+        if proc.returncode != 0 or not encode_target.exists() or encode_target.stat().st_size == 0:
             raise RuntimeError(f"ffmpeg render failed: {(proc.stderr or '')[-600:]}")
+
+        if not plain:
+            _strip_display_matrix(encode_target, out_path, meta)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return out_path
+
+
+def _metadata_args(meta: dict) -> list:
+    """The date + GPS tags Photos reads at import."""
+    args = []
+    if meta.get("date"):
+        args += ["-metadata", f"creation_time={meta['date']}"]
+    if meta.get("gps"):
+        args += [
+            "-metadata", f"com.apple.quicktime.location.ISO6709={meta['gps']}",
+            "-metadata", f"location={meta['gps']}",
+        ]
+    return args
+
+
+def _strip_display_matrix(rendered: Path, out_path: Path, meta: dict) -> None:
+    """Stream-copy *rendered* to *out_path*, dropping any display matrix.
+
+    THE FILTERED PATH ROTATES TWICE WITHOUT THIS. ffmpeg autorotates the
+    filtergraph's input, so the pixels come out of a -90° iPhone source as a true
+    1080x1920 portrait — correct — but on this path it *also* copies the source's
+    display matrix onto the output stream, so a player rotates the already-upright
+    pixels a second time and the clip lands sideways in Photos. The concat-demuxer
+    path does not do this, which is why drop-only exports were always fine.
+
+    `-display_rotation 0` on the INPUT is the only thing that clears it; it
+    overrides the matrix to zero so nothing is written out. `-metadata:s:v:0
+    rotate=0`, `-map_metadata:s:v:0 -1` and `-noautorotate` were all tried and all
+    leave the matrix in place. Because this only deletes a now-redundant tag —
+    ffmpeg already did the pixel work — it is correct for any source rotation,
+    not just the -90° case there is footage for.
+
+    Re-stamping the metadata here is not optional: a `-c copy` remux drops
+    creation_time (GPS happens to survive). Verified both ways.
+    """
+    cmd = [
+        FFMPEG, "-y",
+        "-display_rotation", "0",
+        "-i", str(rendered),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-c", "copy",
+    ] + _metadata_args(meta) + ["-movflags", "+faststart", str(out_path)]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError(f"ffmpeg de-rotate remux failed: {(proc.stderr or '')[-600:]}")
 
 
 def _concat_demuxer_cmd(src: Path, pieces: list, tmp_dir: Path) -> list:

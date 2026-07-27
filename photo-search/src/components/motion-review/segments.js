@@ -23,3 +23,29 @@ export function complementSegments(cuts, duration) {
 export function sumDurations(segs) {
   return (segs || []).reduce((acc, s) => acc + (s.end - s.start), 0);
 }
+
+// Which segment a timeline time lands in. A time inside a GAP snaps forward to
+// the next segment, because a gap is footage this panel doesn't play — landing
+// on the next thing it will actually show is the useful answer.
+export function indexForTime(segs, t) {
+  const list = segs || [];
+  for (let i = 0; i < list.length; i++) {
+    if (t < list[i].start) return i;   // in the gap before this one
+    if (t < list[i].end) return i;     // inside this one
+  }
+  return Math.max(0, list.length - 1);
+}
+
+// Stable CONTENT keys for a segment list. Callers rebuild these arrays on every
+// render, so effects must not key off array identity — see SegmentVideo.
+//
+// Bounds and rates are keyed separately on purpose: changing a boundary should
+// restart the panel, but nudging a speed magnitude should only change the
+// playback rate, not yank playback back to the start.
+export function segmentsKey(segs) {
+  return (segs || []).map((s) => `${s.start.toFixed(3)}-${s.end.toFixed(3)}`).join(",");
+}
+
+export function ratesKey(segs) {
+  return (segs || []).map((s) => String(s.speed ?? 1)).join(",");
+}

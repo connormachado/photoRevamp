@@ -41,13 +41,41 @@ export function sortRegions(regions) {
   return [...(regions || [])].sort((a, b) => a.start - b.start);
 }
 
-// Length of the finished video: untouched footage plus whatever each region's
-// type says its span contributes.
+// The ordered list of PIECES the finished video is made of — the display-side
+// mirror of edit_boundaries.build_plan.
+//
+// Walks [0, duration]: every gap between regions is untouched footage and emits
+// a plain piece; every region hands off to its type's `toPieces` hook. With
+// cut-only regions this returns exactly what complementSegments returns, which
+// is why the drop-only preview is unchanged.
+//
+// This is what the Trimmed panel plays, so the preview shows what the export
+// will actually produce instead of only knowing how to skip cuts.
+export function buildPlan(regions, duration) {
+  const regs = sortRegions(regions);
+  const plan = [];
+  let cursor = 0;
+  for (const r of regs) {
+    const s = Math.max(0, r.start);
+    const e = Math.min(duration, r.end);
+    if (s > cursor + 1e-3) plan.push({ start: cursor, end: s, speed: 1 });
+    for (const p of getType(r.type).toPieces(r) || []) {
+      plan.push({ speed: 1, ...p });
+    }
+    cursor = Math.max(cursor, e);
+  }
+  if (cursor < duration - 1e-3) plan.push({ start: cursor, end: duration, speed: 1 });
+  return plan;
+}
+
+// Length of the finished video. Derived from the plan rather than computed
+// separately: the header used to do its own covered/transformed arithmetic while
+// the preview panel did its own thing, which is exactly how the two came to
+// disagree about speed regions. One source of truth.
 export function outputDuration(regions, duration) {
-  const covered = (regions || []).reduce((acc, r) => acc + (r.end - r.start), 0);
-  const transformed = (regions || []).reduce(
-    (acc, r) => acc + getType(r.type).outputDuration(r), 0);
-  return Math.max(0, duration - covered + transformed);
+  const total = buildPlan(regions, duration).reduce(
+    (acc, p) => acc + (p.end - p.start) / (p.speed || 1), 0);
+  return Math.max(0, total);
 }
 
 // Two region lists equal within a small epsilon, ignoring ids (which are UI-side
