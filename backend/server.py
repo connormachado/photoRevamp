@@ -309,6 +309,22 @@ def motion_review_export():
     return jsonify(record)
 
 
+@app.route("/motion-review/draft", methods=["POST"])
+def motion_review_draft():
+    """Persist in-progress edit state {"video_id", "regions"} as a resumable
+    draft — no ledger write, no audit log entry. This is the header save icon."""
+    data = request.get_json() or {}
+    video_id = data.get("video_id", "")
+    regions = data.get("regions")
+    if not video_id:
+        return jsonify({"error": "no video_id provided"}), 400
+    try:
+        draft = motion_review.save_draft(video_id, regions or [])
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(draft)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":

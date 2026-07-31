@@ -49,17 +49,17 @@ function DurationSummary({ original, trimmed, savedBytes }) {
 }
 
 // Square save button standing to the left of the title block, sized to span both
-// the title line and the stats line beneath it. Fires the same export as the
-// green dome in the left rail.
-function HeaderSaveButton({ onExport, exporting, saved }) {
+// the title line and the stats line beneath it. Saves the CURRENT edit state as
+// a draft so a reload can resume it — it does not export. The green dome in the
+// left rail is the only thing that exports/approves.
+function HeaderSaveButton({ onSaveDraft, justSaved }) {
   const [hover, setHover] = useState(false);
   return (
     <button
-      onClick={onExport}
-      disabled={exporting}
+      onClick={onSaveDraft}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-      title="Save — export the trimmed clip into Photos at the original's date"
+      title="Save draft — keep this in-progress edit so it's here next time"
       style={{
         width: 52,
         height: 52,          // ≈ the combined height of the title + stats rows
@@ -68,25 +68,21 @@ function HeaderSaveButton({ onExport, exporting, saved }) {
         alignItems: "center",
         justifyContent: "center",
         borderRadius: 10,
-        border: `1px solid ${saved ? "#22c55e66" : ACCENT + "55"}`,
-        background: exporting
-          ? "rgba(45,212,191,0.05)"
-          : hover
-            ? "rgba(45,212,191,0.16)"
-            : "rgba(45,212,191,0.08)",
-        color: saved ? "#22c55e" : ACCENT,
-        cursor: exporting ? "default" : "pointer",
+        border: `1px solid ${justSaved ? "#22c55e66" : ACCENT + "55"}`,
+        background: hover ? "rgba(45,212,191,0.16)" : "rgba(45,212,191,0.08)",
+        color: justSaved ? "#22c55e" : ACCENT,
+        cursor: "pointer",
         transition: "background 0.12s",
       }}
     >
-      {exporting
-        ? <span style={{ fontSize: 11, color: ACCENT }}>…</span>
+      {justSaved
+        ? <span style={{ fontSize: 20 }}>✓</span>
         : <SaveIcon size={24} />}
     </button>
   );
 }
 
-export default function ReviewStage({ video, regions, onRegionsChange, onExport, exporting }) {
+export default function ReviewStage({ video, regions, onRegionsChange, onSaveDraft, draftSaved }) {
   // The playhead is PLACED, not hovered: it only moves on click, drag, ←/→ or
   // real playback. `preview` is the transient hover position — it moves the
   // Original panel so you can see that frame, but never the playhead itself.
@@ -249,9 +245,8 @@ export default function ReviewStage({ video, regions, onRegionsChange, onExport,
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <HeaderSaveButton
-            onExport={onExport}
-            exporting={exporting}
-            saved={Boolean(video.exported_at)}
+            onSaveDraft={onSaveDraft}
+            justSaved={draftSaved}
           />
           <div>
             <div style={{ fontSize: 18, fontWeight: 600, color: "#e5e5e5" }}>{video.source_name}</div>

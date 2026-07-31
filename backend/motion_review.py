@@ -32,6 +32,7 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 MOTION_DIR = DEFAULT_DB_PATH / "motion_review"
 PROPOSALS_DIR = MOTION_DIR / "proposals"
 REVIEWS_DIR = MOTION_DIR / "reviews"
+DRAFTS_DIR = MOTION_DIR / "drafts"          # in-progress, unapproved edit state
 PREVIEW_DIR = MOTION_DIR / "preview"        # cached browser-playable transcodes
 DECISIONS_LOG = MOTION_DIR / "decisions.jsonl"
 SAVINGS_PATH = MOTION_DIR / "savings.json"  # running pool of reclaimed bytes
@@ -159,6 +160,43 @@ def _get_verdict(video_id: str) -> dict:
     return _read_json(_review_path(video_id)) or {}
 
 
+# ── Draft state ───────────────────────────────────────────────────────────────
+# A draft is a resume point for an in-progress edit, not a decision — it never
+# touches decisions.jsonl or savings.json. Written by the header save icon;
+# cleared once export_to_photos supersedes it with a real approval.
+
+def _draft_path(video_id: str) -> Path:
+    return DRAFTS_DIR / f"{video_id}.json"
+
+
+def save_draft(video_id: str, regions: list) -> dict:
+    """Persist the in-progress (unapproved) edit state for a video."""
+    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    if not prop:
+        raise FileNotFoundError(f"no proposal for {video_id}")
+    orig_dur = prop.get("original_duration", 0)
+    draft = {
+        "video_id": video_id,
+        "regions": eb.sanitize_regions(regions or [], orig_dur),
+        "saved_at": _now_iso(),
+    }
+    _atomic_write_json(_draft_path(video_id), draft)
+    return draft
+
+
+def _get_draft(video_id: str) -> dict:
+    """Return {video_id, regions, saved_at} for a video, or {} if no draft."""
+    return _read_json(_draft_path(video_id)) or {}
+
+
+def _clear_draft(video_id: str) -> None:
+    """Delete a video's draft file, if any. Best-effort — never raises."""
+    try:
+        _draft_path(video_id).unlink()
+    except FileNotFoundError:
+        pass
+
+
 # ── Queue ─────────────────────────────────────────────────────────────────────
 
 def list_queue() -> list[dict]:
@@ -190,7 +228,17 @@ def list_queue() -> list[dict]:
         # mutated. Reviews written before the edit-boundary registry existed
         # carry only cut_segments; they upgrade to cut regions on read.
         proposed_regions = _proposed_regions(prop)
-        if review.get("regions") is not None:
+        # A draft ALWAYS wins when present, regardless of prior verdict —
+        # re-editing an already-exported video (to tweak before a future
+        # re-export) is a normal thing to do, and the draft is by definition
+        # the most recent thing the user was actively working on. This stays
+        # correct after a real export because export_to_photos clears the
+        # draft the moment it succeeds, so the just-exported review's regions
+        # naturally take back over until a new draft is saved.
+        draft = _get_draft(video_id)
+        if draft.get("regions") is not None:
+            regions = eb.sanitize_regions(draft["regions"], orig_dur)
+        elif review.get("regions") is not None:
             regions = eb.sanitize_regions(review["regions"], orig_dur)
         elif review.get("cut_segments") is not None:
             regions = eb.sanitize_regions(
@@ -478,6 +526,7 @@ def export_to_photos(
     #    reviews/<id>.json, savings pool) so an export and an approve stay one
     #    consistent story rather than two competing records.
     review = record_decision(video_id, "approve", regions=final_regions)
+    _clear_draft(video_id)  # the export is now the resumable state
 
     ts = _now_iso()
     imported = result.get("imported") or {}
@@ -492,9 +541,11 @@ def export_to_photos(
         "export_path": result.get("rendered_path"),
         "export_size_bytes": result.get("size_bytes"),
         "source_date": result.get("source_date"),
+        "gps": result.get("gps"),
         "photos_item_id": imported.get("item_id"),
         "imported": bool(imported.get("success")),
         "date_set_via_applescript": bool(imported.get("date_set")),
+        "location_set_via_applescript": bool(imported.get("location_set")),
         "revealed": bool((result.get("revealed") or {}).get("success")),
     }
     with open(DECISIONS_LOG, "a") as f:

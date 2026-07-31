@@ -11,20 +11,25 @@ the original stays a manual decision.
 Plain functions only (no Flask); server.py wraps these in a route, matching the
 convention used by cleanup.py / stats.py.
 
-Why the date is stamped during the encode
------------------------------------------
-Two independent mechanisms set the exported clip's date, and both are used:
+Why date AND location are stamped twice
+----------------------------------------
+Both the date and the GPS location get two independent write attempts:
 
-1. The QuickTime `creation_time` container tag, written by `render_segments` as
-   part of the same ffmpeg pass that does the trimming. Photos reads it at import,
-   so the clip is already correctly dated before AppleScript is involved.
-2. `set date of media item id ...` afterwards in `import_to_photos`.
+1. Container tags (`creation_time` + the ISO-6709 location string), written by
+   `render_segments`/`render_plan` as part of the same ffmpeg pass that does
+   the trimming.
+2. `set date of media item id ...` / `set location of media item id ...`
+   afterwards in `import_to_photos`.
 
 (2) was expected to fail as read-only but is in fact accepted on current macOS
-(verified — a real import came back `date_set: True` and Photos reported the
-right timestamp). Keep BOTH: (1) is the one that needs no automation permission
-and survives if the AppleScript vocabulary changes in a future macOS, and they
-agree, so there is no conflict. `import_to_photos` reports which took.
+for both properties (verified against real imported items via `osascript`).
+**(1) alone is NOT sufficient** — verified for both: an item imported with only
+the container tags present came back from Photos with the wrong date (see
+`_try_set_item_date`'s day/month-ordering bug, fixed after being caught this
+way) and `location: missing value`. (2) is what actually lands the correct
+value; (1) is kept anyway since it needs no automation permission and costs
+nothing extra. `import_to_photos` reports which of (2) took via `date_set` /
+`location_set`.
 """
 
 import os
@@ -384,13 +389,18 @@ def import_to_photos(
 ) -> dict:
     """Import *video_path* into Apple Photos and return {success, item_id, ...}.
 
-    The date is expected to already be baked into the file by render_segments
-    (see the module docstring); `original_date` is accepted so callers can be
-    explicit, and so the AppleScript `date` attempt below has something to try.
+    The date and GPS are expected to already be baked into the file by
+    render_segments (see the module docstring); `original_date`/`gps` are
+    accepted so the AppleScript attempts below have something to set. Neither
+    container tag is reliably picked up by Photos' importer on its own
+    (verified for both) — the AppleScript `date`/`location` properties are
+    what actually land the value; the container tags are kept as the
+    lower-effort, no-permission-needed mechanism that should agree with them.
 
-    Returns {"success": bool, "item_id": str|None, "date_set": bool, "error"?: str}
-    — the caller decides whether a failed date-set is fatal (it is not; the
-    container tag is the mechanism that actually works).
+    Returns {"success": bool, "item_id": str|None, "date_set": bool,
+    "location_set": bool, "error"?: str} — the caller decides whether a
+    failed date/location-set is fatal (it is not; a failure just means the
+    clip landed without that field being force-corrected).
     """
     path = Path(video_path).resolve()
     if not path.exists():
@@ -423,15 +433,23 @@ def import_to_photos(
         return {"success": False, "item_id": None, "date_set": False,
                 "error": "Photos returned no imported item (already in library?)"}
 
-    # Second date mechanism: the AppleScript `date` property. Verified settable on
-    # current macOS, and it agrees with the creation_time tag baked in at render
-    # time. A failure here is reported rather than raised — the container tag has
-    # already dated the clip correctly on its own.
+    # Second date mechanism: the AppleScript `date` property. Verified settable
+    # on current macOS. A failure here is reported rather than raised — a failed
+    # date-set is not treated as a failed export.
     date_set = False
     if original_date:
         date_set = _try_set_item_date(item_id, original_date)
 
-    return {"success": True, "item_id": item_id, "date_set": date_set}
+    # Same story for location: the ISO-6709 tag baked into the render isn't
+    # reliably read by Photos' importer either (verified — an item imported
+    # with the tag present still came back with `location: missing value`), so
+    # force it the same way via AppleScript's settable `location` property.
+    location_set = False
+    if gps:
+        location_set = _try_set_item_location(item_id, gps)
+
+    return {"success": True, "item_id": item_id, "date_set": date_set,
+            "location_set": location_set}
 
 
 def _try_set_item_date(item_id: str, iso_date: str) -> bool:
@@ -445,12 +463,59 @@ def _try_set_item_date(item_id: str, iso_date: str) -> bool:
     safe_id = item_id.replace('"', "").replace("\\", "")
     script = (
         f'set theDate to current date\n'
+        # `day` is set to 1 before `year`/`month` so the intermediate date is
+        # always valid — setting month while `day` still holds *today's*
+        # day-of-month overflows into the following month whenever today's
+        # day exceeds the target month's length (e.g. running this on the
+        # 31st against a February date rolls over to March 3rd, then `set day
+        # to 11` lands on March 11th instead of February 11th). Reproduced
+        # directly via osascript; day-of-month bugs like this only show up on
+        # the days it can occur, which is why this passed testing before.
+        f'set day of theDate to 1\n'
         f'set year of theDate to {y}\n'
         f'set month of theDate to {mo}\n'
         f'set day of theDate to {d}\n'
         f'set time of theDate to {h * 3600 + mi * 60 + s}\n'
         f'tell application "Photos"\n'
         f'  set date of media item id "{safe_id}" to theDate\n'
+        f'end tell'
+    )
+    try:
+        subprocess.run(["osascript", "-e", script],
+                       check=True, capture_output=True, text=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _parse_iso6709(gps: str) -> tuple[float, float] | None:
+    """Parse an ISO-6709 string ("+43.6552-072.2412+180.799/") to (lat, lon).
+
+    Altitude (the third signed number, if present) is dropped — Photos'
+    AppleScript `location` property only takes {latitude, longitude}.
+    """
+    m = re.match(r"^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?/?$",
+                 (gps or "").strip())
+    if not m:
+        return None
+    return float(m.group(1)), float(m.group(2))
+
+
+def _try_set_item_location(item_id: str, gps: str) -> bool:
+    """Attempt `set location of media item ... to {lat, lon}`.
+
+    Mirrors _try_set_item_date: the ISO-6709 tag baked into the render at
+    encode time isn't reliably read by Photos' importer, so this forces it via
+    AppleScript's settable `location` property after import.
+    """
+    parsed = _parse_iso6709(gps)
+    if not parsed:
+        return False
+    lat, lon = parsed
+    safe_id = item_id.replace('"', "").replace("\\", "")
+    script = (
+        f'tell application "Photos"\n'
+        f'  set location of media item id "{safe_id}" to {{{lat}, {lon}}}\n'
         f'end tell'
     )
     try:

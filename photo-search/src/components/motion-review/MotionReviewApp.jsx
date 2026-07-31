@@ -22,6 +22,8 @@ export default function MotionReviewApp({ onExit }) {
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null); // {ok, message}
+  const [draftSaved, setDraftSaved] = useState(false); // brief checkmark flash on the header save icon
+  const draftSavedTimerRef = useRef(null);
   const lastVidRef = useRef(null);
 
   const loadQueue = useCallback(async () => {
@@ -57,6 +59,7 @@ export default function MotionReviewApp({ onExit }) {
     const v = videos.find((x) => x.video_id === selectedVideoId);
     setEditedRegions(v ? (v.regions || regionsFromCuts(v.cut_segments)) : []);
     setExportResult(null); // last video's outcome shouldn't linger on this one
+    setDraftSaved(false);
   }, [selectedVideoId, videos]);
 
   // Save = export: render the kept footage, import it into Photos at the
@@ -107,6 +110,35 @@ export default function MotionReviewApp({ onExit }) {
       setExporting(false);
     }
   }, [selectedVideoId, editedRegions, exporting]);
+
+  // Save = persist the CURRENT in-progress edit as a resumable draft, distinct
+  // from export. Fires only from the header save icon. No ledger/audit write on
+  // the backend, so a failed attempt is safe to ignore — the user just retries.
+  const saveDraft = useCallback(async () => {
+    if (!selectedVideoId) return;
+    try {
+      const res = await fetch(`${API}/motion-review/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: selectedVideoId, regions: editedRegions }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      // Fold the saved draft's regions back onto `videos` — otherwise switching
+      // to another video and back re-seeds `editedRegions` from the stale
+      // snapshot fetched at page load, making the save look like a no-op.
+      setVideos((prev) => prev.map((v) =>
+        v.video_id === selectedVideoId
+          ? { ...v, regions: data.regions || v.regions }
+          : v
+      ));
+      clearTimeout(draftSavedTimerRef.current);
+      setDraftSaved(true);
+      draftSavedTimerRef.current = setTimeout(() => setDraftSaved(false), 2000);
+    } catch {
+      /* local-only tool; a failed draft save just means try again later */
+    }
+  }, [selectedVideoId, editedRegions]);
 
   // After a verdict: badge the video, fold in any edited boundaries, update the
   // reclaimed pool, then jump to the next unreviewed video.
@@ -221,8 +253,8 @@ export default function MotionReviewApp({ onExit }) {
               video={selected}
               regions={editedRegions}
               onRegionsChange={setEditedRegions}
-              onExport={runExport}
-              exporting={exporting}
+              onSaveDraft={saveDraft}
+              draftSaved={draftSaved}
             />
           </>
         )}
