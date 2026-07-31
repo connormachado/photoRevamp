@@ -93,7 +93,7 @@ and `/reveal`.
   shows a speed region by setting `playbackRate`, which browsers cap at 16 (and which
   drops audio well before that), while a speed magnitude goes to 20. A 20× region
   therefore previews at 16× but exports at a true 20×. Also: seeking a segment panel
-  to exactly a piece's `end` instantly trips the end-of-list check in `onTimeUpdate`
+  to exactly a piece's `end` instantly trips the end-of-list check in `advance`
   and wraps playback to zero — the `seekTo` mapping parks 0.05s inside the piece to
   avoid it.
 - **A seek is the expensive operation in the review room, and two things were doing it
@@ -110,6 +110,18 @@ and `/reveal`.
   250 frames put keyframes ~4.2s apart at 60fps, so every cut skip decoded up to 4s of
   video to land one frame. Measured after: 0 sibling seeks during playback, seam seeks
   resolving in 8–21ms.
+- **Crossing a piece boundary only seeks when the pieces are NOT contiguous.**
+  `SegmentVideo.advance` compares `next.start` to `seg.end` (`CONTIGUOUS_EPS`): at a
+  speed-region edge they are equal, the source runs straight on, and crossing is a
+  `playbackRate` change and nothing else. Seeking there re-primed the decoder at a
+  position playback had already gone past — a visible jump BACKWARDS, measured at 3
+  frames at 1x and 24 at 3.5x (the overshoot scales with the rate). Only a real gap
+  (a cut) gets `currentTime = next.start`. Boundary detection runs on
+  `requestVideoFrameCallback` — once per presented frame — because `timeupdate`'s ~4/s
+  meant noticing a piece had ended up to 250ms late; `timeupdate` is kept as a backstop
+  because rVFC stops firing when the tab is hidden and the panel must not then run
+  straight through a cut. Reporting the playhead upward stays on `timeupdate`: it
+  drives parent state, and 4 renders a second is fine where 60 would not be.
 - **The preview proxy is versioned by filename, and is NOT the export path.**
   `motion_review.PREVIEW_SUFFIX` (`_h264_v2.mp4`) is the cache-buster: the mtime check
   can't notice that the *encode settings* changed, so bump the suffix whenever they do

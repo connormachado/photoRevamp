@@ -27,6 +27,15 @@ import { indexForTime, ratesKey, segmentsKey } from "./segments";
  * previews speed regions at their real rate (regions.buildPlan supplies them)
  * while the Removed panel keeps its flat 4× timelapse.
  */
+
+// Two piece boundaries this close count as CONTIGUOUS: the source runs straight
+// from one into the next, so crossing it is a rate change and NOTHING ELSE.
+// buildPlan emits exactly-equal values there, so this only absorbs float noise.
+const CONTIGUOUS_EPS = 1e-3;
+
+// Cross a boundary a hair early rather than a hair late — for a cut that means
+// never showing a frame that was meant to be removed. ~1 frame at 60fps.
+const BOUNDARY_LEAD = 0.02;
 export default function SegmentVideo({ src, segments, rate = 1, onTime, seekTo = null, onStop }) {
   const ref = useRef(null);
   const idxRef = useRef(0); // which segment we're currently inside
@@ -34,6 +43,7 @@ export default function SegmentVideo({ src, segments, rate = 1, onTime, seekTo =
   // Set just before the automatic end-of-list pause, so that pause doesn't get
   // reported as "the user stopped here" and drag every panel to the last frame.
   const autoPauseRef = useRef(false);
+  const rvfcRef = useRef(null);   // in-flight requestVideoFrameCallback handle
 
   // The segment list is read through a ref inside effects so those effects can
   // depend on its CONTENT rather than the array's identity.
@@ -107,6 +117,60 @@ export default function SegmentVideo({ src, segments, rate = 1, onTime, seekTo =
     applyRate();
   }
 
+  // Move past any piece the playhead has reached the end of.
+  //
+  // The seek here is CONDITIONAL, and that is the whole point. When the next
+  // piece starts where this one ended — every speed-region edge — the source
+  // runs straight on and only the rate changes, so there is nothing to seek to.
+  // Seeking anyway re-primed the decoder at a position playback had already
+  // passed, i.e. a visible jump BACKWARDS: measured at 3 frames at 1x and 24 at
+  // 3.5x, because the overshoot scales with how fast the piece was playing.
+  function advance(t) {
+    const v = ref.current;
+    const segs = segsRef.current;
+    if (!v || !segs.length || v.paused) return;
+    const seg = segs[idxRef.current];
+    if (!seg || t < seg.end - BOUNDARY_LEAD) return;
+
+    if (idxRef.current >= segs.length - 1) {
+      autoPauseRef.current = true;
+      v.pause();
+      idxRef.current = 0;
+      v.currentTime = segs[0].start;
+      return;
+    }
+
+    const next = segs[idxRef.current + 1];
+    idxRef.current += 1;
+    applyRate(idxRef.current);          // this piece's own speed
+    if (Math.abs(next.start - seg.end) < CONTIGUOUS_EPS) return;  // just play on
+    v.currentTime = next.start;         // a real gap: skip it
+  }
+
+  // Watch for boundaries once per PRESENTED FRAME. `timeupdate` fires only ~4x a
+  // second, so a piece end was noticed up to 250ms late — the lateness that the
+  // seek above then "corrected" backwards over. rVFC catches it within a frame.
+  // Self-cancelling while paused (no frames are presented), re-armed by onPlay.
+  function startFrameLoop() {
+    const v = ref.current;
+    if (!v || !v.requestVideoFrameCallback || rvfcRef.current != null) return;
+    const tick = (_now, meta) => {
+      rvfcRef.current = null;
+      const vid = ref.current;
+      if (!vid) return;
+      advance(meta.mediaTime);
+      if (!vid.paused) rvfcRef.current = vid.requestVideoFrameCallback(tick);
+    };
+    rvfcRef.current = v.requestVideoFrameCallback(tick);
+  }
+
+  useEffect(() => () => {
+    const v = ref.current;
+    if (v && rvfcRef.current != null && v.cancelVideoFrameCallback) {
+      v.cancelVideoFrameCallback(rvfcRef.current);
+    }
+  }, []);
+
   function onPlay() {
     const v = ref.current;
     if (!v || !segments.length) return;
@@ -116,6 +180,7 @@ export default function SegmentVideo({ src, segments, rate = 1, onTime, seekTo =
       idxRef.current = 0;
       v.currentTime = segments[0].start;
     }
+    startFrameLoop();
   }
 
   function onTimeUpdate() {
@@ -123,22 +188,14 @@ export default function SegmentVideo({ src, segments, rate = 1, onTime, seekTo =
     if (!v || !segments.length) return;
     // Report whether we're actually PLAYING: `timeupdate` also fires for the
     // programmatic seeks above (and the segment-change reset), and the timeline
-    // must not treat those as "the playhead moved".
+    // must not treat those as "the playhead moved". This stays on timeupdate
+    // rather than moving to the frame loop above: it drives parent state, and
+    // 4 renders a second is fine where 60 would not be.
     if (onTime) onTime(v.currentTime, !v.paused);
-    const seg = segments[idxRef.current];
-    if (!seg) return;
-    if (v.currentTime >= seg.end - 0.02) {
-      if (idxRef.current < segments.length - 1) {
-        idxRef.current += 1;
-        v.currentTime = segments[idxRef.current].start; // skip the gap
-        applyRate(idxRef.current);                      // this piece's own speed
-      } else {
-        autoPauseRef.current = true;
-        v.pause();
-        idxRef.current = 0;
-        v.currentTime = segments[0].start;
-      }
-    }
+    // Backstop for the frame loop, which goes idle whenever the browser stops
+    // presenting frames (a hidden tab). Coarse, but the panel must not run
+    // straight through a cut just because you looked at another tab.
+    advance(v.currentTime);
   }
 
   // A pause the USER caused reports where this panel stopped, so the parent can

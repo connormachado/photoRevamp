@@ -17,3 +17,6 @@ CHANGES_PENDING_REVIEW.md
 
 # Video Testing Stuff
 test-videos/
+
+# Internal Documentation for agents, not needed globally
+docs/
