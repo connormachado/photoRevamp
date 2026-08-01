@@ -55,6 +55,10 @@ Files named in this doc that don't appear there (`duplicates.py`, `clustering.py
   (accidental, dark, blurry, screenshot, receipt, duplicate scene) fire in parallel and
   merge into one deduped cull queue.
 - **Search chips** — one-tap versions of those same six queries for normal searching.
+- **Per-filter photo dismissal** — "not this one, not here." Hide a photo from one
+  junk-cull chip without touching the photo or the delete counter; persists to
+  `photo_db/dismissed.json`, scoped per category so hiding from "blurry" doesn't affect
+  "dark". The control lives in the photo detail modal, above "Show in Photos".
 - **Show in Photos** — reveals the exact asset in Photos.app. Note this ended up
   *different from the original "reveal in Finder" plan*: photos are indexed from the
   derivatives cache, whose paths Photos.app doesn't recognize, so it reveals by
@@ -193,6 +197,20 @@ render pipeline.
   `*_refuses_a_traversing_id` route sweeps stay green with the guard removed. Bind host
   audited and clean — `app.run` passes no `host=`, so it is Werkzeug's `127.0.0.1` default,
   and no `--host` flag or Makefile override exists.
+
+- ✅ **Per-filter photo dismissal** (Aug 2026). New `backend/dismissed.py` ledger (atomic
+  write, per-category, in-memory cached — deliberately diverges from `stats.py`'s
+  read-every-call style since this is on the search hot path) plus `search.search_text`'s
+  `exclude_ids` over-fetch (`n + len(exclude_ids)`, capped at `OVERFETCH_CAP`) and three
+  `/filters/*` routes. `SearchChips.jsx` chips gained a stable `id` (the ledger key,
+  separate from the freely-rewordable `query`). 613 pytest + 135 Vitest green, lint/build
+  clean. Live-verified end to end against the real server and library: dismissing backfills
+  the grid without moving the delete counter, survives a server restart, stays isolated per
+  category (dismissing under "blurry" left "dark" unaffected), Undo restores it, and a
+  Junk Hunt dismissal removes a photo from every chip that surfaced it via `_sources`
+  provenance. Follow-up in the same session: moved the hide control from a per-tile hover
+  icon to the photo detail modal (above "Show in Photos", same button styling), auto-closing
+  the modal on success since the photo it was showing no longer belongs in that view.
 
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None

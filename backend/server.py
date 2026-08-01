@@ -32,6 +32,7 @@ import video_upload
 import embed_job
 import stats as stats_store
 import safe_paths
+import dismissed as dismissed_store
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
 from pathlib import Path
 
@@ -181,7 +182,20 @@ def search_text():
     if not query:
         return jsonify({"error": "empty query"}), 400
 
-    results = search.search_text(query, n, collection, model, tokenizer, device)
+    # A category scopes this search to one junk-cull chip's dismissal ledger.
+    # A typed search carries no category and is never filtered — absent or
+    # invalid, this is a no-op rather than a 400, since the chip registry that
+    # defines valid categories lives on the frontend.
+    category = data.get("category")
+    exclude_ids = None
+    if isinstance(category, str) and category:
+        try:
+            exclude_ids = set(dismissed_store.get_dismissed(category))
+        except ValueError:
+            exclude_ids = None
+
+    results = search.search_text(query, n, collection, model, tokenizer, device,
+                                 exclude_ids=exclude_ids)
     return jsonify({"results": results})
 
 
@@ -206,6 +220,48 @@ def search_image():
 
     results = search.search_image(img, n, collection, model, preprocess, device)
     return jsonify({"results": results})
+
+
+# ── Per-category dismissal (junk-cull chips) ─────────────────────────────────
+# A dismissal is a display filter only — never a delete, never a filesystem
+# write outside dismissed.json. See backend/dismissed.py.
+
+@app.route("/filters/dismiss", methods=["POST"])
+def filters_dismiss():
+    data = _json_body()
+    category = data.get("category")
+    photo_id = data.get("id")
+    if not photo_id:
+        return jsonify({"error": "no id provided"}), 400
+    try:
+        count = dismissed_store.dismiss(category, photo_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "count": count})
+
+
+@app.route("/filters/restore", methods=["POST"])
+def filters_restore():
+    data = _json_body()
+    category = data.get("category")
+    photo_id = data.get("id")
+    if not photo_id:
+        return jsonify({"error": "no id provided"}), 400
+    try:
+        count = dismissed_store.restore(category, photo_id)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "count": count})
+
+
+@app.route("/filters/dismissed")
+def filters_dismissed():
+    """Debug aid: the whole dismissal map, or one category's list."""
+    category = request.args.get("category") or None
+    try:
+        return jsonify({"dismissed": dismissed_store.get_dismissed(category)})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/graph-view")

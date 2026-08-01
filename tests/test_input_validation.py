@@ -239,10 +239,10 @@ class TestNoRouteReturnsFiveHundred:
     """A sweep, so a newly added route inherits the rule without a bespoke test."""
 
     GET_ROUTES = ["/stats", "/motion-review/queue", "/motion-review/savings",
-                  "/api/embed/status"]
+                  "/api/embed/status", "/filters/dismissed"]
     POST_ROUTES = ["/stats/increment", "/search/text", "/search/image",
                    "/motion-review/decision", "/motion-review/draft",
-                   "/motion-review/export"]
+                   "/motion-review/export", "/filters/dismiss", "/filters/restore"]
 
     JUNK_BODIES = [
         {}, {"unexpected": "field"}, {"video_id": None}, {"query": None},

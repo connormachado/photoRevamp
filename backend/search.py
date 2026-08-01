@@ -31,15 +31,31 @@ def embed_image(img, model, preprocess, device) -> list[float]:
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
-def search_text(query, n, collection, model, tokenizer, device) -> list[dict]:
-    """Natural-language search. Returns a list of formatted result dicts."""
+# Upper bound on how far a dismissed-ids over-fetch can push n_results. Chroma
+# clamps to collection size on its own; this just guards a pathological ledger
+# (thousands of dismissals in one category) from asking for an absurd n.
+OVERFETCH_CAP = 2000
+
+
+def search_text(query, n, collection, model, tokenizer, device,
+                 exclude_ids: set[str] | None = None) -> list[dict]:
+    """Natural-language search. Returns a list of formatted result dicts.
+
+    `exclude_ids`, when given, over-fetches by exactly its size (capped) and
+    filters afterward — the minimum over-fetch that still guarantees a full
+    page, since every excluded id can displace at most one slot.
+    """
     vec = embed_text(query, model, tokenizer, device)
+    fetch_n = n if not exclude_ids else min(n + len(exclude_ids), OVERFETCH_CAP)
     results = collection.query(
         query_embeddings=[vec],
-        n_results=n,
+        n_results=fetch_n,
         include=["metadatas", "distances"],
     )
-    return format_results(results)
+    formatted = format_results(results)
+    if exclude_ids:
+        formatted = [r for r in formatted if r["id"] not in exclude_ids]
+    return formatted[:n]
 
 
 def search_image(img, n, collection, model, preprocess, device) -> list[dict]:
@@ -69,5 +85,6 @@ def format_results(results) -> list[dict]:
             "lat": meta.get("lat", ""),
             "lon": meta.get("lon", ""),
             "size_kb": meta.get("size_kb", ""),
+            "apple_uuid": meta.get("apple_uuid", ""),  # debug/traceability only
         })
     return out

@@ -3,6 +3,7 @@ import OpenInPhotosButton from "./components/OpenInPhotosButton";
 import SyncButton from "./components/SyncButton";
 import EmbedButton from "./components/EmbedButton";
 import SearchChips, { CHIPS } from "./components/SearchChips";
+import { HideFromFilterButton, UndoToast } from "./components/HideFromFilter";
 import DeleteCounter from "./components/DeleteCounter";
 import { StatsProvider } from "./context/StatsContext";
 import GraphView from "./components/GraphView";
@@ -103,7 +104,7 @@ function PhotoCard({ photo, onClick }) {
   );
 }
 
-function Modal({ photo, onClose, onSearchSimilar }) {
+function Modal({ photo, onClose, onSearchSimilar, onHide }) {
   if (!photo) return null;
   return (
     <div
@@ -168,6 +169,9 @@ function Modal({ photo, onClose, onSearchSimilar }) {
             </div>
           )}
           <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+            {onHide && (
+              <HideFromFilterButton onHide={() => onHide(photo)} onHidden={onClose} />
+            )}
             <OpenInPhotosButton id={photo.id} />
             <button
               onClick={() => { onSearchSimilar(photo); onClose(); }}
@@ -219,6 +223,12 @@ export default function App() {
   const [junkCount, setJunkCount] = useState(null); // result count for the button badge
   const [resultView, setResultView] = useState("grid"); // "grid" | "graph"
   const [room, setRoom] = useState("search"); // "search" | "motion" — full-screen room
+  // Which chip's dismissal ledger the current results are scoped to, if any.
+  // Null on typed/image search and "find similar" — those have no category to
+  // hide a photo from, so the hide control doesn't render there.
+  const [activeCategory, setActiveCategory] = useState(null);
+  // { label, categories, photo } for the "Hidden from X — Undo" toast.
+  const [undo, setUndo] = useState(null);
   const fileRef = useRef();
   // Remembers how to re-run the last search, so toggling the count re-fetches it.
   const lastSearchRef = useRef(null);
@@ -238,10 +248,11 @@ export default function App() {
     setStats(prev => ({ ...(prev || {}), total }));
   }, []);
 
-  const searchByText = useCallback(async (q, n = 24) => {
+  const searchByText = useCallback(async (q, n = 24, category = null) => {
     if (!q.trim()) return;
     setJunkHunt(false); // any direct search exits the junk queue
-    lastSearchRef.current = (count) => searchByText(q, count);
+    setActiveCategory(category || null);
+    lastSearchRef.current = (count) => searchByText(q, count, category);
     setLoading(true);
     setError("");
     setSearchLabel(`"${q}"`);
@@ -249,7 +260,7 @@ export default function App() {
       const res = await fetch(`${API}/search/text`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q, n }),
+        body: JSON.stringify({ query: q, n, ...(category ? { category } : {}) }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -263,6 +274,7 @@ export default function App() {
 
   const searchByImage = useCallback(async (file, n = 24) => {
     setJunkHunt(false); // any direct search exits the junk queue
+    setActiveCategory(null); // image search results have no dismissal category
     lastSearchRef.current = (count) => searchByImage(file, count);
     setLoading(true);
     setError("");
@@ -307,17 +319,22 @@ export default function App() {
     if (lastSearchRef.current) lastSearchRef.current(n);
   }, []);
 
-  // Clicking a chip mirrors typing its query and hitting Enter.
-  const runChip = useCallback((q) => {
-    setQuery(q);
-    searchByText(q, resultCount);
+  // Clicking a chip mirrors typing its query and hitting Enter, scoped to that
+  // chip's dismissal category (searchByText sets activeCategory from it).
+  const runChip = useCallback((chip) => {
+    setQuery(chip.query);
+    searchByText(chip.query, resultCount, chip.id);
   }, [searchByText, resultCount]);
 
-  // Junk Hunt: fire all six chip queries at once, merge + dedupe by path, and
-  // show the combined "worst photos" queue in the grid.
+  // Junk Hunt: fire all six chip queries at once (each scoped to its own
+  // dismissal category), merge + dedupe by path, and show the combined
+  // "worst photos" queue in the grid. `_sources` records which chip(s)
+  // surfaced each photo, so hiding it from Junk Hunt can dismiss it from
+  // every contributing category, not just one.
   const runJunkHunt = useCallback(async () => {
     setMode("text");
     setQuery("");
+    setActiveCategory(null); // provenance lives on each photo's _sources instead
     setError("");
     setLoading(true);
     setSearchLabel("your library's worst photos");
@@ -328,14 +345,19 @@ export default function App() {
           fetch(`${API}/search/text`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: chip.query, n: 48 }),
-          }).then(r => r.json())
+            body: JSON.stringify({ query: chip.query, n: 48, category: chip.id }),
+          }).then(r => r.json()).then(data => ({ chip, data }))
         )
       );
       const byPath = new Map();
-      for (const data of responses) {
+      for (const { chip, data } of responses) {
         for (const photo of data.results || []) {
-          if (!byPath.has(photo.path)) byPath.set(photo.path, photo);
+          const existing = byPath.get(photo.path);
+          if (existing) {
+            existing._sources.push(chip.id);
+          } else {
+            byPath.set(photo.path, { ...photo, _sources: [chip.id] });
+          }
         }
       }
       const merged = [...byPath.values()];
@@ -348,6 +370,68 @@ export default function App() {
       setLoading(false);
     }
   }, []);
+
+  // Persist a per-category dismissal, optimistically drop the tile, backfill
+  // the grid with a re-run of the current search, and surface an undo toast.
+  // Never touches the photo itself — /filters/dismiss is a pure display
+  // filter, unlike /reveal or the delete counter.
+  const handleHide = useCallback(async (photo) => {
+    const categories = photo._sources?.length ? photo._sources : (activeCategory ? [activeCategory] : []);
+    if (categories.length === 0) return;
+
+    setResults(prev => prev.filter(p => p.id !== photo.id));
+    if (junkHunt) setJunkCount(prev => (prev != null ? Math.max(0, prev - 1) : prev));
+
+    try {
+      await Promise.all(categories.map(category =>
+        fetch(`${API}/filters/dismiss`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category, id: photo.id }),
+        }).then(r => { if (!r.ok) throw new Error("dismiss failed"); })
+      ));
+    } catch (e) {
+      // The write didn't land — put the tile back rather than show a grid
+      // that lies, same discipline as StatsContext.bump.
+      setResults(prev => [...prev, photo]);
+      if (junkHunt) setJunkCount(prev => (prev != null ? prev + 1 : prev));
+      throw e;
+    }
+
+    if (junkHunt) {
+      runJunkHunt();
+    } else if (lastSearchRef.current) {
+      lastSearchRef.current(resultCount);
+    }
+    setUndo({ label: `Hidden from ${categories.join(", ")}`, categories, photo });
+  }, [activeCategory, junkHunt, resultCount, runJunkHunt]);
+
+  const handleUndo = useCallback(async () => {
+    if (!undo) return;
+    const { categories, photo } = undo;
+    try {
+      await Promise.all(categories.map(category =>
+        fetch(`${API}/filters/restore`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category, id: photo.id }),
+        })
+      ));
+    } catch {
+      // Best-effort: even if the restore write fails, still re-run the
+      // search below so the UI doesn't look stuck.
+    }
+    if (junkHunt) {
+      runJunkHunt();
+    } else if (lastSearchRef.current) {
+      lastSearchRef.current(resultCount);
+    }
+  }, [undo, junkHunt, resultCount, runJunkHunt]);
+
+  // A category is known — and the hide control can render — whenever the
+  // grid is a chip search or Junk Hunt; a typed/image search or "find
+  // similar" has no filter to hide the photo from.
+  const categoryKnown = junkHunt || !!activeCategory;
 
   return (
     <StatsProvider>
@@ -685,7 +769,16 @@ export default function App() {
         photo={selectedPhoto}
         onClose={() => setSelectedPhoto(null)}
         onSearchSimilar={handleSearchSimilar}
+        onHide={categoryKnown ? handleHide : undefined}
       />
+
+      {undo && (
+        <UndoToast
+          label={undo.label}
+          onUndo={handleUndo}
+          onDismiss={() => setUndo(null)}
+        />
+      )}
     </StatsProvider>
   );
 }

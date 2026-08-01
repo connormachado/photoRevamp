@@ -20,3 +20,7 @@ test-videos/
 
 # Internal Documentation for agents, not needed globally
 docs/
+
+# chatGPT stuff until I decide to use him as well
+.codex/
+AGENTS.md

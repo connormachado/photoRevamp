@@ -65,6 +65,24 @@ def isolate_stats(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def isolate_dismissed(tmp_path, monkeypatch):
+    """Point `dismissed.DISMISSED_PATH` at tmp_path for EVERY test, no opt-in.
+
+    Same rationale as `isolate_stats`: without this, any test that dismisses a
+    photo would read/write the real repo's `photo_db/dismissed.json`. Also
+    resets the module's in-memory cache before and after, since `dismissed.py`
+    (unlike stats.py) caches in memory rather than re-reading on every call.
+    """
+    import dismissed
+
+    path = tmp_path / "dismissed.json"
+    monkeypatch.setattr(dismissed, "DISMISSED_PATH", path)
+    dismissed.reload()
+    yield path
+    dismissed.reload()
+
+
 @pytest.fixture
 def seeded_stats(isolate_stats):
     """Write a stats.json with known contents and return its path.
