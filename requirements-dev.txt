@@ -1,0 +1,9 @@
+# Development-only dependencies. Install with:
+#   .venv/bin/pip install -r requirements-dev.txt
+# Runtime deps live in requirements.txt and are NOT duplicated here.
+#
+# Note the venv is Python 3.12 while the shell's default python3 may be newer —
+# always install into .venv, and run tests via `make test`.
+
+pytest>=8
+pytest-mock>=3.14

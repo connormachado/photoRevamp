@@ -16,6 +16,7 @@ Then open the React UI at localhost:5173 (or wherever Vite serves it).
 import argparse
 import base64
 import io
+import os
 
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
@@ -30,6 +31,7 @@ import motion_review
 import video_upload
 import embed_job
 import stats as stats_store
+import safe_paths
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
 from pathlib import Path
 
@@ -37,7 +39,18 @@ from pathlib import Path
 pillow_heif.register_heif_opener()
 
 app = Flask(__name__)
-CORS(app)
+
+# CORS is scoped to the Vite dev server rather than left wide open. A bare
+# `CORS(app)` sends `Access-Control-Allow-Origin: *` on every route, which — with
+# no authentication anywhere in this app — means any page the user happens to be
+# browsing can call these routes and READ the response. Binding to 127.0.0.1 does
+# not help: the browser is already inside that boundary.
+# PHOTO_MEMORY_ORIGINS (comma-separated) overrides it if the frontend ever moves.
+_origins = os.environ.get("PHOTO_MEMORY_ORIGINS", "").strip()
+CORS(app, origins=(
+    [o.strip() for o in _origins.split(",") if o.strip()] if _origins
+    else ["http://localhost:5173", "http://127.0.0.1:5173"]
+))
 
 # Climb Cutter uploads are whole climbing videos — hundreds of MB is normal.
 # Flask 3.1 already defaults MAX_CONTENT_LENGTH to None (unlimited), so this is
@@ -78,6 +91,51 @@ def reload_collection():
     collection = client.get_collection(COLLECTION_NAME)
 
 
+# ── Request parsing ───────────────────────────────────────────────────────────
+# Coercing query strings and JSON bodies is a routing-layer concern, so these
+# stay here rather than becoming a module. Both exist because the routes used to
+# call `int(...)` and `.get(...)` on unvalidated input: a non-numeric `?n=`, or a
+# body that parsed as a bare JSON string, raised straight out of the view and
+# returned a 500 (with a full traceback attached, when debug was on).
+
+def _json_body() -> dict:
+    """The request's JSON body as a dict, or {} for anything else.
+
+    `request.get_json()` returns whatever parsed — a str for `"hello"`, a list
+    for `[1,2]` — and the routes then call `.get` on it. Anything that is not an
+    object is treated as no body at all, so the routes' own required-field checks
+    produce the 400.
+    """
+    try:
+        data = request.get_json(silent=True)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _int_param(name: str, default: int, minimum: int | None = None,
+               maximum: int | None = None, source=None):
+    """A query-string integer, clamped. Returns None when it isn't a number.
+
+    `maximum` is not cosmetic on `n`: it flows into `collection.query(n_results=)`,
+    and an unbounded value is a trivial way to make the server chew through the
+    whole index.
+    """
+    raw = (source if source is not None else request.args).get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+MAX_RESULTS = 500
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/stats")
@@ -100,8 +158,10 @@ def stats_increment():
     Optional "exact_bytes" credits the photo's real size to the reclaimed total
     instead of the per-photo average (see stats.AVG_PHOTO_BYTES).
     """
-    data = request.get_json() or {}
-    delta = int(data.get("delta", 0))
+    data = _json_body()
+    delta = _int_param("delta", 0, source=data)
+    if delta is None:
+        return jsonify({"error": "delta must be a number"}), 400
     # A malformed size must not cost the caller their count bump — fall back to
     # the average rather than 500ing the whole write.
     try:
@@ -113,9 +173,11 @@ def stats_increment():
 
 @app.route("/search/text", methods=["POST"])
 def search_text():
-    data = request.json
-    query = data.get("query", "").strip()
-    n = int(data.get("n", 24))
+    data = _json_body()
+    n = _int_param("n", 24, minimum=1, maximum=MAX_RESULTS, source=data)
+    if n is None:
+        return jsonify({"error": "n must be a number"}), 400
+    query = str(data.get("query") or "").strip()
     if not query:
         return jsonify({"error": "empty query"}), 400
 
@@ -126,13 +188,22 @@ def search_text():
 @app.route("/search/image", methods=["POST"])
 def search_image():
     """Accepts a base64-encoded image, finds visually similar photos."""
-    data = request.json
-    b64 = data.get("image_b64", "")
-    n = int(data.get("n", 24))
-    if not b64:
+    data = _json_body()
+    n = _int_param("n", 24, minimum=1, maximum=MAX_RESULTS, source=data)
+    if n is None:
+        return jsonify({"error": "n must be a number"}), 400
+    b64 = data.get("image_b64") or ""
+    if not b64 or not isinstance(b64, str):
         return jsonify({"error": "no image"}), 400
 
-    img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+    # A dropped file that isn't a decodable image is user error, not a server
+    # fault — including PIL's decompression-bomb guard, which fires on a small
+    # payload that would expand to gigabytes of pixels.
+    try:
+        img = Image.open(io.BytesIO(base64.b64decode(b64, validate=True))).convert("RGB")
+    except Exception:
+        return jsonify({"error": "could not decode image"}), 400
+
     results = search.search_image(img, n, collection, model, preprocess, device)
     return jsonify({"results": results})
 
@@ -140,7 +211,9 @@ def search_image():
 @app.route("/api/graph-view")
 def graph_view_route():
     query = request.args.get("query", "").strip()
-    n = int(request.args.get("n", 50))
+    n = _int_param("n", 50, minimum=1, maximum=MAX_RESULTS)
+    if n is None:
+        return jsonify({"error": "n must be a number"}), 400
     if not query:
         return jsonify({"error": "empty query"}), 400
     payload = graph_view.graph_view(query, n, collection, model, tokenizer, device)
@@ -150,9 +223,13 @@ def graph_view_route():
 @app.route("/thumbnail")
 def thumbnail():
     """Serves a resized thumbnail for a given photo path."""
-    path = request.args.get("path", "")
-    size = int(request.args.get("size", 300))
-    p = Path(path)
+    size = _int_param("size", 300, minimum=1, maximum=4096)
+    if size is None:
+        return jsonify({"error": "size must be a number"}), 400
+    try:
+        p = safe_paths.resolve_within_roots(request.args.get("path", ""))
+    except safe_paths.UnsafePathError as e:
+        return jsonify({"error": str(e)}), 403
     if not p.exists():
         return jsonify({"error": "file not found"}), 404
 
@@ -171,8 +248,10 @@ def full_image():
     HEIC is converted to JPEG in memory because Chrome refuses to render HEIC
     natively (ERR_BLOCKED_BY_ORB). Everything else is sent as-is.
     """
-    path = request.args.get("path", "")
-    p = Path(path)
+    try:
+        p = safe_paths.resolve_within_roots(request.args.get("path", ""))
+    except safe_paths.UnsafePathError as e:
+        return jsonify({"error": str(e)}), 403
     if not p.exists():
         return jsonify({"error": "file not found"}), 404
 
@@ -189,7 +268,7 @@ def full_image():
 @app.route("/reveal", methods=["POST"])
 def reveal_in_photos():
     """Spotlight a photo in Apple Photos.app via its stored Apple asset UUID."""
-    data = request.get_json() or {}
+    data = _json_body()
     file_id = data.get("id")
     if not file_id:
         return jsonify({"error": "No id provided"}), 400
@@ -269,6 +348,8 @@ def motion_review_source():
         return jsonify({"error": "no id provided"}), 400
     try:
         path = motion_review.source_h264_path(video_id)
+    except ValueError as e:          # includes safe_paths.UnsafePathError
+        return jsonify({"error": str(e)}), 400
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 404
     except RuntimeError as e:
@@ -280,7 +361,10 @@ def motion_review_source():
 def motion_review_timelapse():
     """Serve the baked timelapse-of-removed-sections mp4 (fallback preview)."""
     video_id = request.args.get("id", "")
-    path = motion_review.timelapse_path(video_id)
+    try:
+        path = motion_review.timelapse_path(video_id)
+    except ValueError as e:          # includes safe_paths.UnsafePathError
+        return jsonify({"error": str(e)}), 400
     if not path:
         return jsonify({"error": "no timelapse for this video"}), 404
     return send_file(str(path), mimetype="video/mp4")
@@ -295,7 +379,7 @@ def motion_review_savings():
 @app.route("/motion-review/decision", methods=["POST"])
 def motion_review_decision():
     """Record a per-video verdict {"video_id", "verdict": "reject"|"approve"}."""
-    data = request.get_json() or {}
+    data = _json_body()
     video_id = data.get("video_id", "")
     verdict = data.get("verdict", "")
     regions = data.get("regions")            # optional edited boundaries
@@ -318,7 +402,7 @@ def motion_review_export():
     This is the green save button: approving a trim and writing it out are one
     action. The original is never touched — the export lands beside it.
     """
-    data = request.get_json() or {}
+    data = _json_body()
     video_id = data.get("video_id", "")
     regions = data.get("regions")            # optional edited boundaries
     cut_segments = data.get("cut_segments")  # legacy shape, still accepted
@@ -339,13 +423,15 @@ def motion_review_export():
 def motion_review_draft():
     """Persist in-progress edit state {"video_id", "regions"} as a resumable
     draft — no ledger write, no audit log entry. This is the header save icon."""
-    data = request.get_json() or {}
+    data = _json_body()
     video_id = data.get("video_id", "")
     regions = data.get("regions")
     if not video_id:
         return jsonify({"error": "no video_id provided"}), 400
     try:
         draft = motion_review.save_draft(video_id, regions or [])
+    except ValueError as e:          # includes safe_paths.UnsafePathError
+        return jsonify({"error": str(e)}), 400
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 404
     return jsonify(draft)
@@ -380,4 +466,8 @@ if __name__ == "__main__":
     startup_result = cleanup.remove_missing_photos(collection)
     print(f"[startup] Cleanup: removed {startup_result['removed']} missing photos out of {startup_result['checked']} checked")
 
-    app.run(port=args.port, debug=True)
+    # debug=True enables the Werkzeug interactive debugger and sends full
+    # tracebacks — absolute paths, source lines, local variables — to every
+    # caller, cross-origin. Opt in with PHOTO_MEMORY_DEBUG=1 while developing;
+    # it must not be the default for anything shared.
+    app.run(port=args.port, debug=os.environ.get("PHOTO_MEMORY_DEBUG") == "1")

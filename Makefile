@@ -16,7 +16,7 @@ GREEN := \033[32m
 CYAN  := \033[36m
 
 # ============================================================
-.PHONY: help start stop install install-backend install-frontend embed clean
+.PHONY: help start stop install install-backend install-frontend install-dev embed clean test test-py test-js
 
 # ── default target ──────────────────────────────────────────
 .DEFAULT_GOAL := help
@@ -69,6 +69,29 @@ install-frontend: ## Install Node dependencies
 	@echo "  $(BOLD)Installing Node dependencies…$(RESET)"
 	cd $(FRONTEND_DIR) && npm install
 	@echo "  $(GREEN)Frontend ready!$(RESET)"
+
+install-dev: ## Install test-only Python dependencies (pytest)
+	@echo "  $(BOLD)Installing dev dependencies…$(RESET)"
+	.venv/bin/pip install -r requirements-dev.txt
+	@echo "  $(GREEN)Dev tooling ready!$(RESET)"
+
+# ============================================================
+#  TESTS
+# ============================================================
+
+test: test-py test-js ## Run the full test suite (Python + frontend)
+
+# Runs through $(PYTHON), not a bare `pytest`: the venv is Python 3.12 while the
+# shell's default python3 may be newer, and only the venv has torch/chromadb.
+test-py: ## Run the Python test suite (pytest)
+	@echo ""
+	@echo "  $(BOLD)Python tests$(RESET)"
+	@$(PYTHON) -m pytest
+
+test-js: ## Run the frontend test suite (Vitest)
+	@echo ""
+	@echo "  $(BOLD)Frontend tests$(RESET)"
+	@cd $(FRONTEND_DIR) && npm test --silent
 
 # ============================================================
 #  UTILITIES

@@ -80,7 +80,9 @@ Files named in this doc that don't appear there (`duplicates.py`, `clustering.py
 #### verified build log
 
 Moved out of `CLAUDE.md` so it isn't re-read every session. Each entry records *how* the
-work was proven, which matters here because there is no automated test suite.
+work was proven. Everything below predates the test suite (added Aug 2026) and rests on a
+manual run; `make test` now covers the pure logic and the route surface, but not the
+render pipeline.
 
 - ✅ Repo structure + CLAUDE.md / RODEMAP.md
 - ✅ `server.py` refactored into thin routes + `backend/` modules
@@ -157,6 +159,39 @@ work was proven, which matters here because there is no automated test suite.
   and the AppleScript lookup live. Shipped with a follow-up fix: `+` was passing React's
   click event as `exactBytes` and 500ing every write — see the root `CLAUDE.md` bullet.
   Browser-verified after: `+` moved 20 → 21 and 34 MB → 38 MB and survived a reload.
+- ✅ **Test harness + `test-author` agent + security hardening** (Aug 2026). Went from zero
+  tests to 542 pytest + 134 Vitest, `make test`. pytest with boundary-mocking fixtures in
+  `tests/conftest.py`; Vitest 4 + RTL 16 (pinned by React 19 / Vite 8) with a global fetch
+  stub, because anything under `StatsProvider` fetches on mount and retries 20×.
+  **The Step-0 audit found live vulnerabilities, so hardening had to land first:** `/full`
+  and `/thumbnail` accepted any absolute path (`?path=/Users/…/.ssh/id_rsa` returned the
+  key), a `../` `video_id` made `save_draft` an arbitrary file overwrite and `_clear_draft`
+  an arbitrary delete, and `CORS(app)` + no auth made all of it reachable from any page the
+  user browsed. Fixed via `backend/safe_paths.py`, scoped CORS, `debug` off by default, and
+  4xx-not-500 input coercion. Verified with teeth, not just green: removing
+  `resolve_within_roots` turned 17 tests red with `/full` serving the secret file at 200;
+  removing `safe_id_component` let a sentinel outside the tree get overwritten; removing the
+  AppleScript quote-strip turned all 7 breakout tests red. Notably the status-code
+  assertions alone stayed green for the write bug — only the filesystem assertions caught
+  it, which is why those exist. `/write-tests <path>` runs the `test-author` subagent on any
+  module; proven on `video_upload.py` (107 tests, 2 new bugs found).
+
+**Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
+- `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
+  so no Pieces are emitted, but the cursor still advances past the span. The frontend
+  reaches the same outcome and documents it, so the two halves agree — the open question is
+  whether "I don't recognise this" should lose the user's footage at all. Only reachable
+  from unsanitised regions (a draft written by a newer build); `sanitize_regions` strips
+  unknown types on normal API traffic.
+- **ffconcat quoting**: `export_video.py` and `video_motion.py` write `file '{path}'` lines,
+  so a source path containing `'` or a newline can inject demuxer directives. Not reachable
+  from the web app (`secure_filename` + extension allowlist strip both) but is from the CLI
+  ingest path.
+- `_safe_name` **loses the extension on a non-ASCII filename** — `日本語.mp4` parks as a file
+  named `mp4`, and the queue row's `source_name` reads `mp4`. Cosmetic (ffmpeg probes by
+  content) but the docstring promises otherwise.
+- `_safe_name` **never caps length**, so a ~300-char filename fails the upload with a bare
+  `OSError [Errno 63]` and no queue row for a perfectly valid video.
 
 ---
 
@@ -300,6 +335,8 @@ narrative arc of the photos. You go on a trip, come home, and an edit is waiting
 4. **Drop it into App.jsx** — add a nav entry or new view
 
 Multi-phase features go one phase at a time via `/build-phase`: plan → implement → verify →
-pause for human check. There is no automated test suite, so "verify" means running it.
+pause for human check. "Verify" means `make test` **plus** running it — the suite covers
+pure logic and the route surface, not the ffmpeg render path or anything visual.
+`/write-tests <path>` generates a suite for a module you're about to change.
 
 **Never commit or push** — that's Connor's, manually. Enforced by hooks in `.githooks/`.

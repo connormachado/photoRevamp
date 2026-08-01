@@ -62,9 +62,16 @@ Because `ffprobe` is not bundled at all, video metadata is scraped by parsing
 Don't write code that shells out to a bare `ffmpeg`/`ffprobe`, and don't add a system
 ffmpeg dependency to fix a bug; the bundled binary is the convention.
 
-There is **no test suite** anywhere in the repo. `backend/test-videos/` holds manual
-fixtures, not tests. Verification is `npm run build` + importing the backend modules;
-every "validated" claim in this file rests on a manual run.
+**`make test` runs everything** — pytest (`tests/`) + Vitest (`photo-search`). Run pytest
+through `.venv/bin/python3`, never a bare `pytest`: the venv is 3.12 and only it has
+torch. Two `tests/conftest.py` behaviours that will bite otherwise — an autouse fixture
+makes any **unmocked `subprocess.run` raise** (request `fake_run`, don't work around it),
+and `stats.STATS_PATH` is autouse-redirected to tmp so no test can clobber the live
+delete counter. Reuse the boundary fixtures (`fake_run`, `ffmpeg_stderr`, `fake_chroma`,
+`tmp_motion_db`, `client`) instead of rolling new mocks. `/write-tests <path>` generates
+a suite via the `test-author` subagent. Coverage is pure logic + the route surface only —
+**not** the ffmpeg render path, which is still verified by running it. Two tests are
+`xfail(strict)` on purpose; they mark open decisions, so don't "fix" them into passing.
 
 ## API surface
 
@@ -80,6 +87,7 @@ and no `/open-in-photos`. Those names are stale; use `/full` and `/reveal`.
 - **Everything works offline.** No external API calls beyond the one-time CLIP download.
 - **Apple Silicon / MPS.** Handle the torch device explicitly; don't assume CUDA or CPU.
 - **Stable IDs.** Photos are keyed by `file_id()` (MD5 of file path) so indexing stays incremental and resumable.
+- **Any request-derived string that becomes a path goes through `backend/safe_paths.py` first** — `resolve_within_roots` for a filesystem path, `safe_id_component` for an id interpolated into a filename. New routes included; see `backend/CLAUDE.md` for why.
 - **No git operations.** Do not commit, push, or otherwise write to git history.
 
 ## Non-obvious wiring

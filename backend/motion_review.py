@@ -23,6 +23,7 @@ import imageio_ffmpeg
 
 import edit_boundaries as eb
 import export_video
+import safe_paths
 import stats as stats_store
 from utils import DEFAULT_DB_PATH
 
@@ -151,10 +152,31 @@ def _derive(regions: list, prop: dict) -> dict:
     }
 
 
+# ── Per-video paths ───────────────────────────────────────────────────────────
+# Every one of these interpolates a caller-supplied `video_id` into a filename,
+# and the id arrives straight off the wire (a JSON field on /motion-review/draft,
+# /decision and /export; a query param on /source). It is validated at each
+# path-building site rather than once at the route, because these functions are
+# also called from each other and from the queue listing.
+#
+# The stakes are asymmetric: proposals/, reviews/ and drafts/ are SIBLING dirs,
+# so a `../`-laden id makes the guard-read and the subsequent write resolve to
+# the same file outside the tree — turning `save_draft` into an arbitrary
+# overwrite and `_clear_draft` into an arbitrary unlink. A real id is an md5
+# hexdigest, so rejecting anything with path syntax costs nothing.
+
+def _proposal_path(video_id: str) -> Path:
+    return PROPOSALS_DIR / f"{safe_paths.safe_id_component(video_id)}.json"
+
+
+def _preview_path(video_id: str, suffix: str = PREVIEW_SUFFIX) -> Path:
+    return PREVIEW_DIR / f"{safe_paths.safe_id_component(video_id)}{suffix}"
+
+
 # ── Verdict state ─────────────────────────────────────────────────────────────
 
 def _review_path(video_id: str) -> Path:
-    return REVIEWS_DIR / f"{video_id}.json"
+    return REVIEWS_DIR / f"{safe_paths.safe_id_component(video_id)}.json"
 
 
 def _get_verdict(video_id: str) -> dict:
@@ -168,12 +190,12 @@ def _get_verdict(video_id: str) -> dict:
 # cleared once export_to_photos supersedes it with a real approval.
 
 def _draft_path(video_id: str) -> Path:
-    return DRAFTS_DIR / f"{video_id}.json"
+    return DRAFTS_DIR / f"{safe_paths.safe_id_component(video_id)}.json"
 
 
 def save_draft(video_id: str, regions: list) -> dict:
     """Persist the in-progress (unapproved) edit state for a video."""
-    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    prop = _read_json(_proposal_path(video_id))
     if not prop:
         raise FileNotFoundError(f"no proposal for {video_id}")
     orig_dur = prop.get("original_duration", 0)
@@ -288,7 +310,7 @@ def list_queue() -> list[dict]:
 
 def get_proposal(video_id: str) -> dict | None:
     """Return a single proposal dict merged with its verdict, or None."""
-    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    prop = _read_json(_proposal_path(video_id))
     if not prop:
         return None
     prop["review"] = _get_verdict(video_id)
@@ -339,7 +361,7 @@ def source_h264_path(video_id: str) -> Path:
     the finished file; the per-call temp name and the playability check are
     belt-and-braces for anything the lock can't cover (a second process).
     """
-    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    prop = _read_json(_proposal_path(video_id))
     if not prop:
         raise FileNotFoundError(f"no proposal for {video_id}")
     source_path = prop.get("source_path", "")
@@ -347,7 +369,7 @@ def source_h264_path(video_id: str) -> Path:
         raise FileNotFoundError(f"source video missing for {video_id}: {source_path}")
 
     PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
-    out = PREVIEW_DIR / f"{video_id}{PREVIEW_SUFFIX}"
+    out = _preview_path(video_id)
 
     def _cached() -> bool:
         return out.exists() and out.stat().st_mtime >= os.path.getmtime(source_path)
@@ -397,7 +419,7 @@ def _transcode_proxy(video_id: str, source_path: str, out: Path) -> Path:
     # Drop the proxy an older PREVIEW_SUFFIX left behind — it's pure cache, and
     # nothing will ever ask for it again.
     for old in PREVIEW_LEGACY_SUFFIXES:
-        stale = PREVIEW_DIR / f"{video_id}{old}"
+        stale = _preview_path(video_id, old)
         if stale.exists():
             stale.unlink()
     return out
@@ -405,7 +427,7 @@ def _transcode_proxy(video_id: str, source_path: str, out: Path) -> Path:
 
 def timelapse_path(video_id: str) -> Path | None:
     """Return the baked timelapse-of-removed-sections mp4, if it exists."""
-    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    prop = _read_json(_proposal_path(video_id))
     if not prop:
         return None
     timelapse = (prop.get("artifacts") or {}).get("timelapse")
@@ -461,10 +483,13 @@ def record_decision(
     only a preview. Writes an append-only audit line (decisions.jsonl) and
     reviews/<video_id>.json (latest state, for resume).
     """
-    if verdict not in VALID_VERDICTS:
+    # isinstance first: `verdict not in VALID_VERDICTS` raises TypeError on an
+    # unhashable value, so a JSON body of {"verdict": []} used to 500 instead of
+    # being rejected as the malformed input it is.
+    if not isinstance(verdict, str) or verdict not in VALID_VERDICTS:
         raise ValueError(f"invalid verdict: {verdict!r}")
 
-    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    prop = _read_json(_proposal_path(video_id))
     if not prop:
         raise FileNotFoundError(f"no proposal for {video_id}")
 
@@ -551,7 +576,7 @@ def export_to_photos(
     Raises FileNotFoundError (no proposal / missing source) or RuntimeError (the
     ffmpeg render failed). Import/reveal trouble comes back inside the payload.
     """
-    prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
+    prop = _read_json(_proposal_path(video_id))
     if not prop:
         raise FileNotFoundError(f"no proposal for {video_id}")
 
@@ -573,7 +598,11 @@ def export_to_photos(
 
     # 1) Render → import → reveal. Nothing is logged until this succeeds.
     result = export_video.export_and_import(
-        source_path, plan, out_name=f"{video_id}_trimmed.mp4"
+        source_path, plan,
+        # Validated again even though the proposal read above already did:
+        # out_name is joined onto EXPORTS_DIR inside render_plan, so this is the
+        # one value that decides where ffmpeg writes.
+        out_name=f"{safe_paths.safe_id_component(video_id)}_trimmed.mp4",
     )
 
     # 2) Now record the approval through the normal path (decisions.jsonl,

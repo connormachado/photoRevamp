@@ -189,8 +189,15 @@ def sanitize_regions(regions: list, duration: float) -> list[dict]:
     neighbours of DIFFERENT types are truncated so the later one starts where the
     earlier one ends, because a span can only have one transform.
     """
+    # A POST can carry anything at all under "regions" — a number, a string, an
+    # object. This function is the authoritative gate, so a non-list is treated
+    # as "no regions" rather than being iterated (a bare int raised TypeError
+    # straight out of the route and 500'd).
+    if not isinstance(regions, (list, tuple)):
+        regions = []
+
     cleaned = []
-    for reg in regions or []:
+    for reg in regions:
         if not isinstance(reg, dict):
             continue
         type_id = reg.get("type") or DEFAULT_TYPE_ID
@@ -246,8 +253,10 @@ def regions_from_cuts(cuts: list) -> list[dict]:
     Used for reviews/proposals written before the registry existed, and for the
     legacy `cut_segments` field still accepted by the API.
     """
+    if not isinstance(cuts, (list, tuple)):
+        cuts = []
     out = []
-    for seg in cuts or []:
+    for seg in cuts:
         try:
             if isinstance(seg, dict):
                 s, e = float(seg["start"]), float(seg["end"])
