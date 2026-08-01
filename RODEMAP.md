@@ -175,6 +175,24 @@ render pipeline.
   assertions alone stayed green for the write bug — only the filesystem assertions caught
   it, which is why those exist. `/write-tests <path>` runs the `test-author` subagent on any
   module; proven on `video_upload.py` (107 tests, 2 new bugs found).
+- ✅ **Source-immutability guard + teeth re-audit** (Aug 2026). Closed the three open gaps
+  from the test-suite review. `tests/test_source_immutability.py` (21 tests, 542 → 563)
+  makes "the original is never deleted or modified" a *tested* property instead of a
+  by-construction one, ahead of the reject-rework and purge features that would break it.
+  Behavioral throughout: real functions against a real tmp source, fingerprinted by
+  size + mtime_ns + md5, with a broadest test that never names the source — it asserts the
+  only files that vanish across export → decision → proxy live under an app-owned root, so
+  it keeps guarding files that don't exist yet. Because `conftest` blocks real
+  subprocesses, a filesystem snapshot can't see an `ffmpeg -y … <source>`; the argv half
+  covers that (no writing invocation names the source as an output). Every guarantee was
+  re-proved by fault injection and the code restored to a byte-identical hash: weakening
+  `resolve_within_roots` → 13 red, gutting `safe_id_component` → 5 red, unescaping the
+  AppleScript uuid → 3 red, deleting the source after export → 6 red, appending to it in
+  `record_decision` → 9 red. **No pre-existing test caught either source-touching fault.**
+  One decorative-test finding, now recorded in `backend/CLAUDE.md`: the parametrized
+  `*_refuses_a_traversing_id` route sweeps stay green with the guard removed. Bind host
+  audited and clean — `app.run` passes no `host=`, so it is Werkzeug's `127.0.0.1` default,
+  and no `--host` flag or Makefile override exists.
 
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
