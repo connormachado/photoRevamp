@@ -75,6 +75,60 @@ Files named in this doc that don't appear there (`duplicates.py`, `clustering.py
 - **HEIC → JPEG on the fly** — Chrome refuses to render HEIC natively; the `/full`
   endpoint converts in memory.
 
+#### verified build log
+
+Moved out of `CLAUDE.md` so it isn't re-read every session. Each entry records *how* the
+work was proven, which matters here because there is no automated test suite.
+
+- ✅ Repo structure + CLAUDE.md / RODEMAP.md
+- ✅ `server.py` refactored into thin routes + `backend/` modules
+- ✅ HEIC → JPEG on-the-fly conversion in the `/full` endpoint
+- ✅ "Show in Photos" button + `/reveal` AppleScript endpoint (reveals by `apple_uuid`)
+- ✅ Results count toggle (12 / 24 / 48 / All)
+- ✅ Delete counter (`stats.py`, `StatsContext`, `DeleteCounter.jsx`) with local persistence
+- ✅ Bulk-delete number pad (`BulkAddPad.jsx`)
+- ✅ Search prompt chips (`SearchChips.jsx`)
+- ✅ Junk Hunt mode (parallel chip queries, deduped results)
+- ✅ Graph View Phase 1 — `compute_layout.py` (UMAP + Agglomerative, full + incremental)
+- ✅ Graph View Phase 2 — `graph_view.py` + `/api/graph-view`
+- ✅ Graph View Phase 3 — `GraphView.jsx` canvas render (works; cosmetically unpolished)
+- ✅ Climb Cutter Phase 1 — `video_motion.py` pixel-diff detection + ffmpeg cut/timelapse
+- ✅ Climb Cutter Phase 2 + 2.5a/b — review room: queue, hover scrub, arrow-key stepping,
+  draggable cut boundaries, verdicts persisted, reclaimed-bytes savings ledger
+- ✅ Climb Cutter edit-boundary framework — `edit_boundaries.py` + `boundaryTypes.js`
+  registry, regions as the source of truth, type picker toolbar + add (`c`) / remove
+  (`delete`), type-agnostic export via `build_plan` → `render_plan`. The drop-only
+  render output is byte-identical to before the refactor (md5-checked).
+- ✅ Climb Cutter "speed" boundary type — green draggable region carrying a typeable
+  magnitude, a 🐇/🐢 direction toggle and −/+ 0.5 steppers (`SpeedBlock.jsx` via the
+  new `renderOverlay` slot). rabbit N = N× faster, turtle N = N× slower; magnitude
+  clamps to [1, 20] and 1 is a no-op that stays on the fast render path. Audio is
+  kept and time-stretched with the existing `atempo` chain. Cut and speed compose.
+  Render-verified frame-by-frame against a burned-in counter, and on a real iPhone
+  `.MOV` (upright, date + GPS intact, stereo audio).
+- ✅ Preview parity for the Trimmed panel — `regions.buildPlan` mirrors
+  `edit_boundaries.build_plan` via a per-type `toPieces` hook, and `SegmentVideo`
+  varies `playbackRate` per piece, so the panel plays what the export will produce
+  instead of only knowing how to skip cuts. `regions.outputDuration` is now derived
+  from the same plan, so the header and the panel can't drift apart again.
+  Browser-verified: rate flips 1 → 2 at the region boundary and back, turtle gives
+  0.5, cuts still skip in the same pass.
+- ✅ Climb Cutter export to Photos — `export_video.py` + `POST /motion-review/export`,
+  equal-sized red/green domes. Smoke-tested end to end on one real
+  clip: 59.18s → 32.93s, 176 MB → 37 MB, landed in Photos upright at the original's
+  date (Feb 11 2026 9:31 PM) with GPS preserved and the original untouched. (The
+  header save icon no longer triggers this — it saves a draft instead.)
+- ✅ Climb Cutter draft-save — header save icon persists in-progress edits
+  (`POST /motion-review/draft`, `drafts/<video_id>.json`), separate from the green
+  dome's export/approve. Browser-verified end-to-end (real navigation away and back,
+  not just a queue re-fetch): a saved boundary survived on both an unreviewed video
+  and one already approved/exported — the latter caught a precedence bug (drafts were
+  being ignored post-approval) and a frontend state-sync bug (draft saves weren't
+  folded back into `videos`), both fixed. Also fixed along the way: the AppleScript
+  date-setter's field-mutation order could silently roll into the wrong month, and
+  GPS location was never actually being applied on export — see `backend/CLAUDE.md`
+  for both.
+
 ---
 
 ## 🗺 track: graph view
