@@ -60,8 +60,10 @@ Files named in this doc that don't appear there (`duplicates.py`, `clustering.py
   derivatives cache, whose paths Photos.app doesn't recognize, so it reveals by
   `apple_uuid` via AppleScript `spotlight media item id` instead of `open -R`.
   ⚠️ Intermittently activates Photos.app without landing on the exact photo — unfixed.
-- **Delete counter + bulk add pad** — tracks how many photos you've culled, persisted to
-  `stats.json`. The number pad logs a batch at once ("I just cleared 23 in Photos").
+- **Delete counter + bulk add pad + reclaimed total** — tracks how many photos you've
+  culled, persisted to `stats.json`. The number pad logs a batch at once ("I just cleared
+  23 in Photos"). The card also shows one reclaimed-space headline summing exact photo
+  sizes, estimated bulk culls and Climb Cutter's trims, with the breakdown on hover.
   This is a *counter*, not a delete-list export — see below for that.
 - **Sync / prune** — drops ChromaDB rows whose files no longer exist on disk, so photos
   deleted in Photos.app stop showing up in search.
@@ -144,6 +146,17 @@ work was proven, which matters here because there is no automated test suite.
   (the clip never played again). Serialised per video_id; reproduced deterministically
   before the fix and verified after, both in-process and with three parallel GETs
   against the live server. See `backend/CLAUDE.md`.
+- ✅ Unified reclaimed-bytes total on the main page — `reclaimed_bytes` is now the derived
+  sum of a `{photos_exact, photos_estimated, climb_cutter}` breakdown, so Climb Cutter's
+  absolute-set mirror can no longer clobber photo bytes. Exact sizes come from Photos via
+  a separate best-effort `size of media item id` call on `/reveal` (measured 1.8–6.4 MB
+  originals against 60–90 KB derivatives — the Chroma `size_kb` route would have been
+  ~50× low); count-only culls use the tunable `stats.AVG_PHOTO_BYTES`. Legacy files
+  migrate on read by seeding the old scalar into `climb_cutter`. Verified the migration
+  leaves the headline unchanged, that a reject→approve cycle doesn't disturb photo bytes,
+  and the AppleScript lookup live. Shipped with a follow-up fix: `+` was passing React's
+  click event as `exactBytes` and 500ing every write — see the root `CLAUDE.md` bullet.
+  Browser-verified after: `+` moved 20 → 21 and 34 MB → 38 MB and survived a reload.
 
 ---
 

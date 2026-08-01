@@ -60,3 +60,27 @@ def reveal_in_photos(uuid: str) -> dict:
         return {"success": True}
     except subprocess.CalledProcessError as e:
         return {"success": False, "error": (e.stderr or "").strip() or str(e)}
+
+
+def photo_size_bytes(uuid: str) -> int:
+    """Best-effort original file size for a Photos asset, in bytes. 0 if unknown.
+
+    The size we actually want is the *original's*, which only Photos knows — the
+    paths we index are derivatives and are far smaller. `size of media item id`
+    reports the real one.
+
+    Deliberately its own osascript call rather than a return value bolted onto
+    `reveal_in_photos`: that script has an unconfirmed intermittent failure, so
+    it stays byte-identical and a size lookup can never be the cause. Every
+    failure mode here is swallowed — a missing size must never turn a successful
+    reveal into an error.
+    """
+    uuid = uuid.replace('"', "").replace("\\", "")
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", f'tell application "Photos" to return size of media item id "{uuid}"'],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+        return max(0, int(out.stdout.strip()))
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        return 0

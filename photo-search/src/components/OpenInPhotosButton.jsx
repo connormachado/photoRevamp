@@ -10,7 +10,7 @@ export default function OpenInPhotosButton({ id }) {
   const [status, setStatus] = useState("idle");
   const [errorMsg, setErrorMsg] = useState("");
   // Opening a photo in Photos is a strong signal the user is about to delete
-  // it, so we optimistically bump the delete counter on success.
+  // it, so we optimistically bump the delete counter (and its bytes) on success.
   const { incrementDeleteCount } = useStats();
 
   async function handleClick(e) {
@@ -25,7 +25,9 @@ export default function OpenInPhotosButton({ id }) {
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.error || "Couldn't show in Photos");
-      incrementDeleteCount();
+      // The reveal also reports the original's real size (0 if Photos wouldn't
+      // say), so this deletion is credited exactly rather than at the average.
+      incrementDeleteCount(data.size_bytes);
       setStatus("success");
       setTimeout(() => setStatus("idle"), 1200); // flash green, then reset
     } catch (err) {

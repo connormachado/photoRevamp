@@ -83,16 +83,32 @@ def reload_collection():
 @app.route("/stats")
 def stats():
     # Merge the indexed-photo count (used by the header) with the persisted
-    # delete counter so the UI can read both from one payload.
-    return jsonify({"total": collection.count(), **stats_store.get_stats()})
+    # delete counter so the UI can read both from one payload. `avg_photo_bytes`
+    # rides along so the UI can name the estimate without keeping its own copy
+    # of the constant — it's config, not state, so it is NOT persisted.
+    return jsonify({
+        "total": collection.count(),
+        "avg_photo_bytes": stats_store.AVG_PHOTO_BYTES,
+        **stats_store.get_stats(),
+    })
 
 
 @app.route("/stats/increment", methods=["POST"])
 def stats_increment():
-    """Bump the delete counter by {"delta": +1 | -1} and return updated stats."""
+    """Bump the delete counter by {"delta": +1 | -1} and return updated stats.
+
+    Optional "exact_bytes" credits the photo's real size to the reclaimed total
+    instead of the per-photo average (see stats.AVG_PHOTO_BYTES).
+    """
     data = request.get_json() or {}
     delta = int(data.get("delta", 0))
-    return jsonify(stats_store.update_stats(delta))
+    # A malformed size must not cost the caller their count bump — fall back to
+    # the average rather than 500ing the whole write.
+    try:
+        exact_bytes = int(data.get("exact_bytes") or 0)
+    except (TypeError, ValueError):
+        exact_bytes = 0
+    return jsonify(stats_store.update_stats(delta, exact_bytes))
 
 
 @app.route("/search/text", methods=["POST"])
@@ -189,7 +205,10 @@ def reveal_in_photos():
     res = cleanup.reveal_in_photos(uuid)
     if not res.get("success"):
         return jsonify({"error": res.get("error", "osascript failed")}), 500
-    return jsonify({"success": True})
+    # Revealing is the app's only "about to delete" signal, and this is the one
+    # moment the original's real size is available — hand it back so the client
+    # can credit exact bytes rather than the average. 0 if Photos wouldn't say.
+    return jsonify({"success": True, "size_bytes": cleanup.photo_size_bytes(uuid)})
 
 
 # ── Library indexing (in-app embed trigger) ──────────────────────────────────

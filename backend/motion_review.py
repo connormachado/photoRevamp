@@ -437,10 +437,11 @@ def _apply_savings(video_id: str, verdict: str, saved_bytes: int) -> int:
         per_video.pop(video_id, None)
     total = sum(per_video.values())
     _atomic_write_json(SAVINGS_PATH, {"total_bytes": total, "per_video": per_video})
-    # Mirror the total into stats.json so it lives alongside the "photos deleted"
-    # counter and rides the same /stats payload. savings.json stays the ledger
-    # (per-video breakdown) so re-reviews stay idempotent.
-    stats_store.set_reclaimed_bytes(total)
+    # Mirror the total into stats.json's `climb_cutter` slot so it lives
+    # alongside the "photos deleted" counter and rides the same /stats payload.
+    # savings.json stays the ledger (per-video breakdown) so re-reviews stay
+    # idempotent; the slot keeps this absolute set from touching photo bytes.
+    stats_store.set_climb_cutter_bytes(total)
     return total
 
 

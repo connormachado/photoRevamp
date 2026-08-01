@@ -4,6 +4,7 @@ import ReviewStage from "./ReviewStage";
 import VerdictButtons from "./VerdictButtons";
 import { formatBytes } from "./format";
 import { regionsFromCuts } from "./regions";
+import { useStats } from "../../context/StatsContext";
 
 const API = "http://localhost:5001";
 const ACCENT = "#2dd4bf";
@@ -40,6 +41,9 @@ export default function MotionReviewApp({ onExit }) {
   const [videos, setVideos] = useState([]);
   const [selectedVideoId, setSelectedVideoId] = useState(null);
   const [savedBytes, setSavedBytes] = useState(0);
+  // A verdict moves the reclaimed total server-side without going through the
+  // counter's own bump(), so the main page's copy has to be re-pulled.
+  const { refreshStats } = useStats();
   const [editedRegions, setEditedRegions] = useState([]); // live edit-boundary list for the selected video
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -116,7 +120,10 @@ export default function MotionReviewApp({ onExit }) {
           ? "Saved to Photos and revealed — original left untouched; delete it yourself once you've checked it."
           : "Saved to Photos — original left untouched; delete it yourself once you've checked it. (Couldn't auto-reveal it.)",
       });
-      if (typeof data.savings_total_bytes === "number") setSavedBytes(data.savings_total_bytes);
+      if (typeof data.savings_total_bytes === "number") {
+        setSavedBytes(data.savings_total_bytes);
+        refreshStats(); // keep the main page's reclaimed total in step
+      }
       setVideos((prev) => prev.map((v) =>
         v.video_id === selectedVideoId
           ? {
@@ -136,7 +143,7 @@ export default function MotionReviewApp({ onExit }) {
     } finally {
       setExporting(false);
     }
-  }, [selectedVideoId, editedRegions, exporting]);
+  }, [selectedVideoId, editedRegions, exporting, refreshStats]);
 
   // Save = persist the CURRENT in-progress edit as a resumable draft, distinct
   // from export. Fires only from the header save icon. No ledger/audit write on
@@ -206,7 +213,10 @@ export default function MotionReviewApp({ onExit }) {
   // After a verdict: badge the video, fold in any edited boundaries, update the
   // reclaimed pool, then jump to the next unreviewed video.
   const handleDecided = useCallback((data) => {
-    if (typeof data.savings_total_bytes === "number") setSavedBytes(data.savings_total_bytes);
+    if (typeof data.savings_total_bytes === "number") {
+      setSavedBytes(data.savings_total_bytes);
+      refreshStats(); // keep the main page's reclaimed total in step
+    }
     setVideos((prev) => {
       const next = prev.map((v) =>
         v.video_id === selectedVideoId
@@ -226,7 +236,7 @@ export default function MotionReviewApp({ onExit }) {
       if (nextUnreviewed) setSelectedVideoId(nextUnreviewed.video_id);
       return next;
     });
-  }, [selectedVideoId]);
+  }, [selectedVideoId, refreshStats]);
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "#0a0a0a", display: "flex", flexDirection: "column", zIndex: 100 }}>
