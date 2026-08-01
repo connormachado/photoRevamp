@@ -27,6 +27,7 @@ import search
 import graph_view
 import cleanup
 import motion_review
+import video_upload
 import embed_job
 import stats as stats_store
 from utils import load_model, DEFAULT_DB_PATH, COLLECTION_NAME
@@ -37,6 +38,12 @@ pillow_heif.register_heif_opener()
 
 app = Flask(__name__)
 CORS(app)
+
+# Climb Cutter uploads are whole climbing videos — hundreds of MB is normal.
+# Flask 3.1 already defaults MAX_CONTENT_LENGTH to None (unlimited), so this is
+# recording the intent rather than lifting a limit; it also caps a runaway
+# upload, which matters because these land on an already-full volume.
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 ** 3   # 8 GiB
 
 # ── Globals (loaded once at startup) ─────────────────────────────────────────
 model = None
@@ -323,6 +330,21 @@ def motion_review_draft():
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 404
     return jsonify(draft)
+
+
+@app.route("/motion-review/upload", methods=["POST"])
+def motion_review_upload():
+    """Ingest videos picked in the browser: save the bytes, then analyse each
+    one into the queue. Synchronous — analysis runs ~0.35x realtime, so a long
+    clip holds the request open while the UI shows a busy state."""
+    files = request.files.getlist("files")
+    if not files:
+        return jsonify({"error": "no files provided"}), 400
+    results = [video_upload.save_and_process(f) for f in files]
+    return jsonify({
+        "queued": sum(r["status"] == "queued" for r in results),
+        "results": results,
+    })
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -18,6 +18,15 @@
   scale was verified NOT to copy the source display matrix (portrait stays upright with
   no rotation flag), unlike the export's `-filter_complex` path — see the rotation
   invariant above, and don't assume the two behave alike.
+  **Generating it must stay serialised per video.** The three review panels share one
+  `/motion-review/source` URL, so a cache miss fires three concurrent transcodes; they
+  used to share one temp path, interleave, and publish a file whose moov atom held
+  another writer's bytes — which the mtime check then served forever, so the clip never
+  played again. `_proxy_lock` (one lock per video_id) plus a per-call temp name and a
+  `_proxy_is_playable` check before `os.replace` close it. Reproduced deterministically
+  with three concurrent `source_h264_path` calls; keep all three guards.
+- **A source file's rotation flag can disagree with its own pixels, and nothing in the metadata reveals it.** Diagnosed on `IMG_8883.mov`: coded frame is upright landscape, yet the container carries `displaymatrix: rotation of -90`, so every conformant player turns it sideways — **including Photos**, whose own derivative for that clip renders portrait. Another clip from the same phone carries a byte-identical `tkhd` matrix and genuinely needs the rotation. iOS guesses orientation at record time and can guess wrong. So a sideways preview is not automatically our bug: extract a frame with `-noautorotate` and *look* before touching the rotation code, and don't try to auto-detect this — only a manual per-video override can fix it.
+- **An upload's path IS its identity.** `video_upload.py` parks files at `uploads/<content-hash>/<name>` and `video_id` is md5-of-absolute-path, so moving or renaming an uploaded file orphans its proposal, review, draft and preview proxy. The content hash (not the filename) is the dedupe key, which is what keeps a re-picked clip from landing a second few-hundred-MB copy on an already-full disk.
 - **`/reveal` takes a `file_id`, but reveals by `apple_uuid`.** Photos are indexed from the derivatives cache, whose paths Photos.app doesn't know. The route looks the row up by `id`, pulls `apple_uuid` from metadata, and hands that to `cleanup.reveal_in_photos`, which runs `spotlight media item id` via AppleScript. Never try to reveal by filename or path.
 - **The UMAP reducer was fit on a 2,000-photo sample** (`photo_db/models/layout_meta.json`, `count_at_fit: 2000`, Jul 3) and has not been refit. All ~49.6k photos carry `x`/`y` because `compute_layout.py incremental` projects new rows onto that existing reducer. The map's *structure* therefore comes from a 2k subset — the likely reason the layout looks off. A full refit is `compute_layout.py` full-fit mode.
 - **Cluster labels are Agglomerative, not density-based.** `compute_layout.py` uses `sklearn.cluster.AgglomerativeClustering` at fixed k (`broad_k=12`, `fine_k=60`), writing `cluster_id_broad`/`cluster_id_fine` back to ChromaDB. There is no HDBSCAN in this project.

@@ -128,6 +128,22 @@ work was proven, which matters here because there is no automated test suite.
   date-setter's field-mutation order could silently roll into the wrong month, and
   GPS location was never actually being applied on export — see `backend/CLAUDE.md`
   for both.
+- ✅ Climb Cutter file-picker ingest — `＋ Add video` in the queue header uploads clips
+  from the macOS panel (`video_upload.py` + `POST /motion-review/upload`), replacing the
+  CLI-only `video_motion.py --video …` path. Uploads are keyed by CONTENT hash, so
+  re-picking a clip (even renamed) reuses the existing entry instead of adding a second
+  few-hundred-MB copy. Synchronous: analysis runs ~0.35x realtime. Verified against a
+  sandboxed `motion_review/` with Flask's test client on a 176 MB / 59s clip — first
+  upload 14.8s `queued`, re-pick 1.1s `already_queued`, renamed re-pick likewise, a
+  `.txt` rejected per-file without sinking the batch, and the queue row rendering
+  correctly. Date + GPS confirmed intact on a real pick from the Photos section, and
+  the route now reports `has_date`/`has_gps` on every upload so a stripped copy can't
+  fail silently at export time.
+- ✅ Preview-proxy concurrency fix — first-open of a video fired three concurrent
+  transcodes into one temp path, publishing a corrupt proxy that then cached forever
+  (the clip never played again). Serialised per video_id; reproduced deterministically
+  before the fix and verified after, both in-process and with three parallel GETs
+  against the live server. See `backend/CLAUDE.md`.
 
 ---
 

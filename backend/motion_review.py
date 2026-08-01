@@ -14,8 +14,10 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import imageio_ffmpeg
 
@@ -295,12 +297,47 @@ def get_proposal(video_id: str) -> dict | None:
 
 # ── Preview media ─────────────────────────────────────────────────────────────
 
+# One lock per video_id, so a slow transcode of one clip doesn't block another.
+_PROXY_LOCKS: dict[str, threading.Lock] = {}
+_PROXY_LOCKS_GUARD = threading.Lock()
+
+
+def _proxy_lock(video_id: str) -> threading.Lock:
+    """The transcode lock for one video, created on first use."""
+    with _PROXY_LOCKS_GUARD:
+        return _PROXY_LOCKS.setdefault(video_id, threading.Lock())
+
+
+def _proxy_is_playable(path: Path) -> bool:
+    """True if ffmpeg can find a video stream with a duration in *path*.
+
+    Guards the one failure that used to be permanent: publishing a corrupt
+    proxy poisons the cache, because the mtime check happily serves it forever.
+    Cheap (~50ms) and paid once per transcode, not per request.
+    """
+    proc = subprocess.run([FFMPEG, "-hide_banner", "-i", str(path)],
+                          capture_output=True, text=True)
+    stderr = proc.stderr   # ffmpeg exits non-zero with no output file; expected.
+    return "Video:" in stderr and "Duration: N/A" not in stderr
+
+
 def source_h264_path(video_id: str) -> Path:
     """Path to a browser-playable (h264/mp4) copy of the source video.
 
     Real iPhone videos are HEVC .mov, which Chrome won't decode, so we transcode
     the original to h264 once and cache it under preview/. Cheap on repeat views.
     Raises FileNotFoundError if the proposal or its source file is missing.
+
+    SERIALISED PER VIDEO, and that is not optional. The three review panels all
+    point at one `/motion-review/source` URL, so opening a video fires three
+    simultaneous GETs; on a cache miss each used to launch its own ffmpeg into
+    the same temp path. The writers interleaved, one of them "won" and published
+    a file with another's bytes inside its moov atom, and the two losers died
+    with "Conversion failed!". The published corpse then cached forever (mtime
+    check) so the video never played again — reproduced deterministically with
+    three concurrent calls. The lock makes the two late callers wait and take
+    the finished file; the per-call temp name and the playability check are
+    belt-and-braces for anything the lock can't cover (a second process).
     """
     prop = _read_json(PROPOSALS_DIR / f"{video_id}.json")
     if not prop:
@@ -312,11 +349,23 @@ def source_h264_path(video_id: str) -> Path:
     PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
     out = PREVIEW_DIR / f"{video_id}{PREVIEW_SUFFIX}"
 
-    # Reuse the cache unless the source is newer than the transcode.
-    if out.exists() and out.stat().st_mtime >= os.path.getmtime(source_path):
+    def _cached() -> bool:
+        return out.exists() and out.stat().st_mtime >= os.path.getmtime(source_path)
+
+    if _cached():
         return out
 
-    tmp = out.with_suffix(".tmp.mp4")
+    with _proxy_lock(video_id):
+        # Re-check inside the lock: while we waited, another request very likely
+        # finished the transcode we were about to start.
+        if _cached():
+            return out
+        return _transcode_proxy(video_id, source_path, out)
+
+
+def _transcode_proxy(video_id: str, source_path: str, out: Path) -> Path:
+    """Encode the preview proxy for one video. Callers must hold its lock."""
+    tmp = out.with_suffix(f".{uuid4().hex}.tmp.mp4")
     cmd = [
         FFMPEG, "-y", "-i", source_path,
         # iPhone .MOV carries streams this build can't decode (4-channel `apac`
@@ -337,9 +386,13 @@ def source_h264_path(video_id: str) -> Path:
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        if tmp.exists():
-            tmp.unlink()
+        tmp.unlink(missing_ok=True)
         raise RuntimeError(f"ffmpeg transcode failed: {proc.stderr[-500:]}")
+    if not _proxy_is_playable(tmp):
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"transcode produced an unplayable proxy for {video_id} — not caching it"
+        )
     os.replace(tmp, out)
     # Drop the proxy an older PREVIEW_SUFFIX left behind — it's pure cache, and
     # nothing will ever ask for it again.

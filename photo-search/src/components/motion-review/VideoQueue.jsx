@@ -1,3 +1,5 @@
+import { useRef, useState } from "react";
+
 const ACCENT = "#2dd4bf";
 
 function fmtDur(s) {
@@ -19,8 +21,60 @@ function VerdictBadge({ verdict }) {
   );
 }
 
+/**
+ * The file picker is hidden and clicked through a ref — the native input is
+ * unstyleable, and the browser only ever hands back bytes, never a path, so the
+ * parent uploads a FormData rather than passing a filename to the backend.
+ */
+function AddVideoButton({ onUpload, uploading }) {
+  const inputRef = useRef(null);
+  const [hover, setHover] = useState(false);
+
+  const handleChange = (e) => {
+    const files = Array.from(e.target.files || []);
+    // Clearing the value is what lets the SAME file be picked twice in a row —
+    // otherwise `change` never fires the second time.
+    e.target.value = "";
+    if (files.length) onUpload(files);
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => inputRef.current?.click()}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        disabled={uploading}
+        title="Add a video from your Mac — it's analysed and added to the queue"
+        style={{
+          padding: "4px 10px",
+          borderRadius: 7,
+          border: `1px solid ${ACCENT}55`,
+          background: hover && !uploading ? "rgba(45,212,191,0.16)" : "rgba(45,212,191,0.08)",
+          color: uploading ? "#4b7a72" : ACCENT,
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: "0.04em",
+          cursor: uploading ? "default" : "pointer",
+          transition: "background 0.12s",
+        }}
+      >
+        ＋ Add video
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="video/*"
+        multiple
+        onChange={handleChange}
+        style={{ display: "none" }}
+      />
+    </>
+  );
+}
+
 /** Left rail: the list of processed videos awaiting (or with) a review. */
-export default function VideoQueue({ videos, selectedVideoId, onSelect }) {
+export default function VideoQueue({ videos, selectedVideoId, onSelect, onUpload, uploading, uploadStatus }) {
   return (
     <div style={{
       flex: 1,
@@ -28,9 +82,17 @@ export default function VideoQueue({ videos, selectedVideoId, onSelect }) {
       overflowY: "auto",
       background: "#0a2e29",
     }}>
-      <div style={{ padding: "16px 16px 8px", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#666" }}>
-        Queue · {videos.length}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "16px 16px 8px" }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#666" }}>
+          Queue · {videos.length}
+        </span>
+        <AddVideoButton onUpload={onUpload} uploading={uploading} />
       </div>
+      {uploadStatus && (
+        <div style={{ padding: "0 16px 10px", fontSize: 11, color: uploading ? ACCENT : "#666", lineHeight: 1.4 }}>
+          {uploadStatus}
+        </div>
+      )}
       {videos.map((v) => {
         const active = v.video_id === selectedVideoId;
         return (
