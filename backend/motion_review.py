@@ -42,6 +42,16 @@ SAVINGS_PATH = MOTION_DIR / "savings.json"  # running pool of reclaimed bytes
 
 VALID_VERDICTS = {"reject", "approve"}
 
+# Guards every read-modify-write of the two shared ledger files: savings.json
+# (via _apply_savings, reached from record_decision) and reviews/<id>.json (the
+# review-state fold at the end of export_to_photos). Export now runs on a
+# background thread (export_job.py) while the request thread can concurrently
+# hit /decision or /remove for a DIFFERENT video, so these writes are no longer
+# guaranteed to run one at a time just because Flask used to serialize them.
+# Reentrant because record_decision calls _apply_savings internally, and both
+# are called from export_to_photos.
+_LEDGER_LOCK = threading.RLock()
+
 # Preview-proxy encode settings. The suffix carries a VERSION: bump it whenever
 # the encode below changes and every cached proxy re-renders on next open, which
 # a plain mtime check can't do (the source file hasn't moved).
@@ -498,68 +508,74 @@ def record_decision(
     if not isinstance(verdict, str) or verdict not in VALID_VERDICTS:
         raise ValueError(f"invalid verdict: {verdict!r}")
 
-    prop = _read_json(_proposal_path(video_id))
-    if not prop:
-        raise FileNotFoundError(f"no proposal for {video_id}")
+    # Held for the whole body, not just _apply_savings: export runs on a
+    # background thread now (export_job.py), so a decision for a DIFFERENT
+    # video can race this function's own read-modify-write of savings.json —
+    # without the lock two verdicts landing at once could read the same
+    # starting total and one's update would silently overwrite the other's.
+    with _LEDGER_LOCK:
+        prop = _read_json(_proposal_path(video_id))
+        if not prop:
+            raise FileNotFoundError(f"no proposal for {video_id}")
 
-    ts = _now_iso()
-    orig_dur = prop.get("original_duration", 0)
-    sp = prop.get("source_path", "")
-    size_bytes = os.path.getsize(sp) if sp and os.path.exists(sp) else 0
+        ts = _now_iso()
+        orig_dur = prop.get("original_duration", 0)
+        sp = prop.get("source_path", "")
+        size_bytes = os.path.getsize(sp) if sp and os.path.exists(sp) else 0
 
-    # Edited boundaries only meaningfully apply to an approval ("apply these").
-    user_regions = _resolve_regions(prop, regions, cut_segments)
-    if verdict == "approve" and user_regions is not None:
-        final_regions = user_regions
-        edited = not eb.regions_equal(final_regions, _proposed_regions(prop))
-    else:
-        final_regions = _proposed_regions(prop)
-        edited = False
+        # Edited boundaries only meaningfully apply to an approval ("apply these").
+        user_regions = _resolve_regions(prop, regions, cut_segments)
+        if verdict == "approve" and user_regions is not None:
+            final_regions = user_regions
+            edited = not eb.regions_equal(final_regions, _proposed_regions(prop))
+        else:
+            final_regions = _proposed_regions(prop)
+            edited = False
 
-    derived = _derive(final_regions, prop)
-    cuts = derived["cut_segments"]
-    keeps = derived["keep_segments"]
-    trimmed_duration = derived["trimmed_duration"]
+        derived = _derive(final_regions, prop)
+        cuts = derived["cut_segments"]
+        keeps = derived["keep_segments"]
+        trimmed_duration = derived["trimmed_duration"]
 
-    saved_bytes = _saved_bytes(size_bytes, orig_dur, trimmed_duration)
+        saved_bytes = _saved_bytes(size_bytes, orig_dur, trimmed_duration)
 
-    # 1) Append-only audit log (one JSON object per line).
-    audit = {
-        "ts": ts,
-        "video_id": video_id,
-        "apple_uuid": prop.get("apple_uuid", ""),
-        "verdict": verdict,
-        "original_duration": orig_dur,
-        "trimmed_duration": trimmed_duration,
-        "estimated_saved_bytes": saved_bytes,
-        "edited": edited,
-        "regions": final_regions,
-        "cut_segments": cuts,
-    }
-    DECISIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(DECISIONS_LOG, "a") as f:
-        f.write(json.dumps(audit) + "\n")
+        # 1) Append-only audit log (one JSON object per line).
+        audit = {
+            "ts": ts,
+            "video_id": video_id,
+            "apple_uuid": prop.get("apple_uuid", ""),
+            "verdict": verdict,
+            "original_duration": orig_dur,
+            "trimmed_duration": trimmed_duration,
+            "estimated_saved_bytes": saved_bytes,
+            "edited": edited,
+            "regions": final_regions,
+            "cut_segments": cuts,
+        }
+        DECISIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(DECISIONS_LOG, "a") as f:
+            f.write(json.dumps(audit) + "\n")
 
-    # 2) Update the global reclaimed-data pool (approve adds, reject removes).
-    total_saved = _apply_savings(video_id, verdict, saved_bytes)
+        # 2) Update the global reclaimed-data pool (approve adds, reject removes).
+        total_saved = _apply_savings(video_id, verdict, saved_bytes)
 
-    # 3) Current state (overwrite) for the UI to reload/resume with edits.
-    review = {
-        "video_id": video_id,
-        "verdict": verdict,
-        "reviewed_at": ts,
-        "regions": final_regions,
-        "cut_segments": cuts,
-        "keep_segments": keeps,
-        "trimmed_duration": trimmed_duration,
-        "edited": edited,
-    }
-    _atomic_write_json(_review_path(video_id), review)
-    return {
-        **review,
-        "video_saved_bytes": saved_bytes,
-        "savings_total_bytes": total_saved,
-    }
+        # 3) Current state (overwrite) for the UI to reload/resume with edits.
+        review = {
+            "video_id": video_id,
+            "verdict": verdict,
+            "reviewed_at": ts,
+            "regions": final_regions,
+            "cut_segments": cuts,
+            "keep_segments": keeps,
+            "trimmed_duration": trimmed_duration,
+            "edited": edited,
+        }
+        _atomic_write_json(_review_path(video_id), review)
+        return {
+            **review,
+            "video_saved_bytes": saved_bytes,
+            "savings_total_bytes": total_saved,
+        }
 
 
 # ── Export to Photos ──────────────────────────────────────────────────────────
@@ -568,6 +584,7 @@ def export_to_photos(
     video_id: str,
     regions: list | None = None,
     cut_segments: list | None = None,
+    progress_cb=None,
 ) -> dict:
     """Render the kept footage, import it into Photos, reveal it, then record it.
 
@@ -581,6 +598,12 @@ def export_to_photos(
     The savings pool is still credited (via record_decision) because it has always
     tracked the hypothetical "if you delete these originals you'd reclaim X" — it
     is a projection, not a record of bytes actually freed.
+
+    *progress_cb*, when given, is forwarded straight to
+    `export_video.export_and_import` — see that function's docstring for the
+    `(phase, frac_or_None)` shape. Callers on the request thread pass None;
+    `export_job.py` (the background-job runner) passes one that writes to the
+    job status file.
 
     Raises FileNotFoundError (no proposal / missing source) or RuntimeError (the
     ffmpeg render failed). Import/reveal trouble comes back inside the payload.
@@ -612,6 +635,7 @@ def export_to_photos(
         # out_name is joined onto EXPORTS_DIR inside render_plan, so this is the
         # one value that decides where ffmpeg writes.
         out_name=f"{safe_paths.safe_id_component(video_id)}_trimmed.mp4",
+        progress_cb=progress_cb,
     )
 
     # 2) Now record the approval through the normal path (decisions.jsonl,
@@ -643,14 +667,18 @@ def export_to_photos(
     with open(DECISIONS_LOG, "a") as f:
         f.write(json.dumps(audit) + "\n")
 
-    # 4) Fold the export onto the resumable review state.
-    review_state = _read_json(_review_path(video_id)) or {}
-    review_state.update({
-        "exported_at": ts,
-        "export_path": result.get("rendered_path"),
-        "export_size_bytes": result.get("size_bytes"),
-        "photos_item_id": imported.get("item_id"),
-    })
-    _atomic_write_json(_review_path(video_id), review_state)
+    # 4) Fold the export onto the resumable review state. Locked because this
+    # is a read-modify-write of the same reviews/<id>.json a concurrent
+    # /decision call (for this or another video's ledger totals) could be
+    # touching — see _LEDGER_LOCK's docstring.
+    with _LEDGER_LOCK:
+        review_state = _read_json(_review_path(video_id)) or {}
+        review_state.update({
+            "exported_at": ts,
+            "export_path": result.get("rendered_path"),
+            "export_size_bytes": result.get("size_bytes"),
+            "photos_item_id": imported.get("item_id"),
+        })
+        _atomic_write_json(_review_path(video_id), review_state)
 
     return {**review, **result, "exported_at": ts}

@@ -274,6 +274,34 @@ render pipeline.
   `Range` header. Added `TestSourceRangeSupport` (`tests/test_route_security.py`) as the
   regression net that didn't exist before.
 
+- ✅ **Non-blocking video export** (Aug 2026). `POST /motion-review/export` no longer blocks
+  the Flask request thread on the ffmpeg re-encode — it now returns 202 immediately with a
+  job id, and a new `backend/export_job.py` runs render → import → reveal on a background
+  **thread** (not a subprocess, unlike `embed_job.py` — export's heavy work already
+  releases the GIL via `subprocess`/`osascript`, and a thread keeps it inside the test
+  suite's in-process monkeypatches and lets it share `motion_review._LEDGER_LOCK` with
+  `/decision`). New `GET /motion-review/export/status` is polled every second by
+  `MotionReviewApp.jsx`, which shows a real phase + percent (`VerdictButtons.jsx`) instead
+  of a static "a few seconds" string. Staleness is judged by boot id (not pid, unlike
+  `embed_job`, since macOS pid reuse could otherwise wedge the guard forever) plus a dead
+  in-process thread handle and a wall-clock ceiling — any one downgrades a stuck job to
+  `failed` and unblocks a fresh export. One export globally at a time; `/decision` and
+  `/remove` now 409 while one is in flight, closing a race non-blocking export would
+  otherwise open (a reject landing mid-render could otherwise fight `_apply_savings`, or a
+  remove could unlink a source out from under a running ffmpeg). `export_video.render_plan`
+  gained an opt-in `progress_cb` (real ffmpeg `-progress pipe:1` percent, scaled to the
+  plan's OUTPUT duration so a sped-up region can't read over 100%) — passing none
+  reproduces the exact pre-existing argv, verified both by a byte-for-byte argv pin in
+  `tests/test_export_args.py` and by rendering one real clip twice (with and without the
+  callback) and md5-comparing the outputs, which matched. 683 pytest (+26: 16 in the new
+  `tests/test_export_job.py`, 6 in a new `TestProgressReporting` class, 4 route-level 409
+  checks in `tests/test_input_validation.py`) + 168 Vitest green,
+  build clean, lint at 13/12 pre-existing errors (one new
+  `react-hooks/set-state-in-effect` on the completion effect — same category the codebase
+  already tolerates elsewhere in this file, not a new kind of finding). Not yet
+  live-verified against a real multi-minute export in the browser (kickoff/poll/guard logic
+  is tested; the actual UI progress bar against Photos.app is a human follow-up).
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

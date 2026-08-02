@@ -41,7 +41,7 @@ from pathlib import Path
 
 import imageio_ffmpeg
 
-from edit_boundaries import Piece
+from edit_boundaries import Piece, plan_output_duration
 from utils import DEFAULT_DB_PATH
 
 # Same pip-bundled ffmpeg the rest of the Climb Cutter uses — there is no system
@@ -138,6 +138,7 @@ def render_plan(
     plan: list,
     out_name: str | None = None,
     metadata: dict | None = None,
+    progress_cb=None,
 ) -> Path:
     """Render an edit *plan* (a list of edit_boundaries.Piece) into one MP4.
 
@@ -155,6 +156,15 @@ def render_plan(
       since the concat demuxer cannot vary playback rate per entry. This path
       needs a second, stream-copy pass to strip a leftover display matrix — see
       `_strip_display_matrix`.
+
+    *progress_cb*, when given, is called with a float 0..1 as the MAIN encode
+    pass (the one above, not the derotate remux) advances. It is strictly
+    opt-in: passing None (the default) runs the exact `subprocess.run` call
+    this function has always made, byte-for-byte identical argv — the
+    `-progress pipe:1 -nostats` flags are only added when a callback is given.
+    The much shorter `_strip_display_matrix` remux pass reports no progress of
+    its own; it is a sub-second stream copy that the caller may treat as
+    "100% done rendering, still finishing up."
     """
     src = Path(source_path)
     if not src.exists():
@@ -198,9 +208,19 @@ def render_plan(
         # that is already upright.
         if plain:
             cmd += _metadata_args(meta)
+        # Opt-in progress reporting only: the default call (progress_cb=None)
+        # gets today's exact argv, unchanged. See the module docstring's
+        # `_run_encode_with_progress` note for why this needs its own flags.
+        if progress_cb:
+            cmd += ["-progress", "pipe:1", "-nostats"]
         cmd.append(str(encode_target))
 
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if progress_cb:
+            proc = _run_encode_with_progress(
+                cmd, plan_output_duration(pieces), progress_cb, tmp_dir
+            )
+        else:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0 or not encode_target.exists() or encode_target.stat().st_size == 0:
             raise RuntimeError(f"ffmpeg render failed: {(proc.stderr or '')[-600:]}")
 
@@ -210,6 +230,71 @@ def render_plan(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return out_path
+
+
+_OUT_TIME_US_RE = re.compile(r"out_time_us=(-?\d+)")
+_OUT_TIME_RE = re.compile(r"out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _parse_progress_seconds(line: str) -> float | None:
+    """Seconds of output rendered so far, parsed from one `-progress` stdout
+    line. Prefers `out_time_us=` (microseconds); falls back to `out_time=
+    HH:MM:SS.ffffff`. Returns None for any line that carries neither — most
+    lines from `-progress pipe:1` are unrelated keys (frame=, fps=, bitrate=,
+    progress=continue/end) and are meant to be skipped, not treated as errors.
+    """
+    line = line.strip()
+    m = _OUT_TIME_US_RE.match(line)
+    if m:
+        us = int(m.group(1))
+        return us / 1_000_000 if us >= 0 else None
+    m = _OUT_TIME_RE.match(line)
+    if m:
+        h, mn, s = m.groups()
+        return int(h) * 3600 + int(mn) * 60 + float(s)
+    return None
+
+
+def _run_encode_with_progress(cmd: list, total_seconds: float, cb, tmp_dir: Path):
+    """Run *cmd* (an ffmpeg invocation carrying `-progress pipe:1 -nostats`),
+    calling `cb(frac)` as it advances, and return a `CompletedProcess`-shaped
+    result so the caller's existing `proc.returncode` / `proc.stderr` handling
+    is untouched.
+
+    stderr goes to a FILE inside tmp_dir, not a pipe — piping both stdout and
+    stderr risks the classic deadlock where ffmpeg blocks writing to a full
+    pipe nobody is draining while this process blocks reading the other one.
+    tmp_dir is already `rmtree`'d by render_plan's `finally`, so nothing extra
+    to clean up here.
+
+    A missing or unparseable progress line is silently skipped — progress
+    reporting must never be able to fail a render that would otherwise
+    succeed, and `cb` itself is called inside a try/except for the same
+    reason (a UI-side exception must not kill an in-progress ffmpeg).
+    """
+    stderr_path = tmp_dir / "ffmpeg_stderr.log"
+    with open(stderr_path, "w") as stderr_file:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_file, text=True)
+        last_pct = -1
+        try:
+            for line in proc.stdout:
+                secs = _parse_progress_seconds(line)
+                if secs is None or not total_seconds:
+                    continue
+                frac = max(0.0, min(1.0, secs / total_seconds))
+                pct = int(frac * 100)
+                if pct != last_pct:
+                    last_pct = pct
+                    try:
+                        cb(frac)
+                    except Exception:
+                        pass
+        finally:
+            proc.wait()
+
+    stderr_text = stderr_path.read_text(errors="replace") if stderr_path.exists() else ""
+    return subprocess.CompletedProcess(args=cmd, returncode=proc.returncode,
+                                       stdout="", stderr=stderr_text)
 
 
 def _metadata_args(meta: dict) -> list:
@@ -556,6 +641,7 @@ def export_and_import(
     source_path: Path | str,
     kept_segments: list,
     out_name: str | None = None,
+    progress_cb=None,
 ) -> dict:
     """render_plan → import_to_photos → reveal_in_photos, in that order.
 
@@ -563,15 +649,29 @@ def export_and_import(
     callers that only drop footage, a plain [{start, end}] keep list — both go
     through render_plan, which picks its render path from the pieces themselves.
 
+    *progress_cb*, when given, is called as `cb(phase, frac_or_None)` with
+    phase one of "rendering" (frac 0..1, forwarded straight from render_plan),
+    "importing" or "revealing" (frac None — those steps are Photos AppleScript
+    calls with no meaningful sub-progress). This function only names phases; it
+    has no opinion on what overall percent they correspond to — that banding is
+    the caller's job (see export_job._on_progress).
+
     Returns {rendered_path, size_bytes, source_date, gps, imported, revealed}.
     Raises on render failure (nothing was written to Photos); import/reveal
     problems come back inside the dict so the caller can report them without the
     export being treated as a crash.
     """
     meta = read_source_metadata(source_path)
-    rendered = render_plan(source_path, kept_segments, out_name, meta)
+    render_progress = (lambda f: progress_cb("rendering", f)) if progress_cb else None
+    rendered = render_plan(source_path, kept_segments, out_name, meta,
+                           progress_cb=render_progress)
 
+    if progress_cb:
+        progress_cb("importing", None)
     imported = import_to_photos(rendered, meta.get("date"), meta.get("gps"))
+
+    if progress_cb:
+        progress_cb("revealing", None)
     revealed = (reveal_in_photos(imported["item_id"])
                 if imported.get("success") else {"success": False,
                                                  "error": "import failed; nothing to reveal"})

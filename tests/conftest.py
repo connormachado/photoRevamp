@@ -157,6 +157,10 @@ class FakeRun:
         # target exists and is non-empty, so a test must fake the file too, not
         # just the exit code.
         self.side_effect = None
+        # Scriptable stdout lines for a faked `Popen(...).stdout` iteration —
+        # see FakePopen / install_popen(). None (the default) means no
+        # progress lines at all, which export_video's parser must tolerate.
+        self.popen_stdout: list[str] | None = None
 
     def set_response(self, stdout="", stderr="", returncode=0):
         self._default = {"stdout": stdout, "stderr": stderr, "returncode": returncode}
@@ -208,6 +212,49 @@ class FakeRun:
         return [s for c in self.osascript_calls if (s := c.flag_value("-e")) is not None]
 
 
+class FakePopen:
+    """Stand-in for `subprocess.Popen`, sharing FakeRun's call list and canned
+    responses so `ffmpeg_calls`, `calls_to`, `flag_value` and the immutability
+    suite's argv sweep all keep working against Popen calls exactly as they do
+    against `.run()` calls — they all read the same `fake.calls` list.
+
+    The one real call site in this codebase (`export_video._run_encode_with_
+    progress`) pipes stdout (to read `-progress` lines) and hands stderr a
+    REAL file handle, never `subprocess.PIPE` — so a genuine ffmpeg process
+    writes its diagnostic text straight into that fd. This fake mirrors that:
+    it writes the canned stderr into the handle synchronously (there is no
+    concurrent child process to race), so code that reads the file back after
+    the real process would have exited sees the same content either way.
+    """
+
+    def __init__(self, fake: "FakeRun", *args, **kwargs):
+        self._fake = fake
+        call = RecordedCall(args, kwargs)
+        fake.calls.append(call)
+        if fake.side_effect is not None:
+            # Runs BEFORE this call "returns" to the caller, same moment a
+            # test can block a background thread mid-render by having the
+            # side effect wait on an Event — the call is already recorded by
+            # this point, so a concurrent poll sees it.
+            fake.side_effect(call)
+
+        resp = fake._queue.pop(0) if fake._queue else fake._default
+        self.returncode = resp["returncode"]
+        self.pid = 424242
+
+        lines = fake.popen_stdout if fake.popen_stdout is not None else []
+        self.stdout = iter(list(lines))
+        self.stderr = None  # this codebase never reads Popen.stderr directly
+
+        stderr_target = kwargs.get("stderr")
+        if stderr_target is not None and hasattr(stderr_target, "write"):
+            stderr_target.write(resp["stderr"])
+            stderr_target.flush()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
 class RealSubprocessBlocked(RuntimeError):
     """Raised when a test tries to spawn an actual process."""
 
@@ -249,7 +296,22 @@ def fake_run(monkeypatch):
         monkeypatch.setattr(subprocess, "run", fake, raising=True)
         return fake
 
+    def install_popen(*_modules_for_readability):
+        """Opt-in, separate from `.install()`: patches `subprocess.Popen` too.
+
+        Only the export-progress path uses Popen at all
+        (`export_video._run_encode_with_progress`, reached when a caller
+        passes `progress_cb`), so most tests never need this — `.install()`
+        alone still covers every `subprocess.run` call, unchanged.
+        """
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            lambda *a, **kw: FakePopen(fake, *a, **kw), raising=True,
+        )
+        return fake
+
     fake.install = install
+    fake.install_popen = install_popen
     return fake
 
 

@@ -8,6 +8,10 @@ import { useStats } from "../../context/StatsContext";
 
 const API = "http://localhost:5001";
 const ACCENT = "#2dd4bf";
+const EXPORT_POLL_MS = 1000; // a 2s-stepping bar (embed's rate) reads as broken here
+
+// export_job.py's states, minus the ones that mean "nothing is happening".
+const TERMINAL_JOB_STATES = new Set(["idle", "done", "failed"]);
 
 /** One line of plain feedback for a finished upload, including the warning that
  *  matters most: a clip whose date/GPS tags didn't survive whatever copy the
@@ -47,8 +51,25 @@ export default function MotionReviewApp({ onExit }) {
   const [editedRegions, setEditedRegions] = useState([]); // live edit-boundary list for the selected video
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [exporting, setExporting] = useState(false);
+  // The one background export job's last-known status (export_job.py's
+  // shape: {job_id, video_id, state, progress, result, error, ...}), or null
+  // before the mount-time poll resolves. Global, not per-video — there is
+  // only ever one export in flight by construction — so any UI that must not
+  // "decorate the wrong clip" (VerdictButtons' progress chrome, exportResult)
+  // gates on `exportJob.video_id === selectedVideoId` rather than trusting
+  // this alone.
+  const [exportJob, setExportJob] = useState(null);
   const [exportResult, setExportResult] = useState(null); // {ok, message}
+  // job_id of the last completed job this component has already folded into
+  // exportResult/loadQueue/refreshStats — a poll keeps re-delivering the same
+  // terminal status every second, and this is what stops that from re-firing
+  // the completion handling on every tick.
+  const handledJobRef = useRef(null);
+  // Covers two clicks landing in the same event-loop tick, which would both
+  // read the same stale closed-over "not busy" state before either request
+  // resolves. `exportJob`'s state is the longer-lived guard once the kickoff
+  // itself has landed.
+  const exportInFlightRef = useRef(false);
   const [draftSaved, setDraftSaved] = useState(false); // brief checkmark flash on the header save icon
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(""); // one line under the queue header
@@ -98,9 +119,19 @@ export default function MotionReviewApp({ onExit }) {
   // the green dome and the header save icon fire it. Deliberately does NOT
   // auto-advance to the next video — the result message is worth reading, and
   // the user still has to go check the clip in Photos.
+  //
+  // The request itself only KICKS OFF the export now — export_job.py runs the
+  // actual render/import/reveal on a background thread and returns 202
+  // immediately, so this function's job is just to store the job status the
+  // poll effect below then drives to completion. It deliberately does not
+  // await that completion or flip any "exporting" state back off itself; the
+  // job's own `state` (surfaced via `exportJob`) owns that for as long as it
+  // is non-terminal.
   const runExport = useCallback(async () => {
-    if (!selectedVideoId || exporting) return;
-    setExporting(true);
+    const jobLive = exportJob && exportJob.video_id === selectedVideoId
+      && !TERMINAL_JOB_STATES.has(exportJob.state);
+    if (!selectedVideoId || exportInFlightRef.current || jobLive) return;
+    exportInFlightRef.current = true;
     setExportResult(null);
     try {
       const res = await fetch(`${API}/motion-review/export`, {
@@ -109,41 +140,90 @@ export default function MotionReviewApp({ onExit }) {
         body: JSON.stringify({ video_id: selectedVideoId, regions: editedRegions }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        setExportResult({ ok: false, message: data.error || "Export failed." });
+      if (res.status === 202) {
+        setExportJob(data); // {job_id, video_id, state: "queued", ...}
         return;
       }
-      const revealed = data.revealed && data.revealed.success;
-      setExportResult({
-        ok: true,
-        message: revealed
-          ? "Saved to Photos and revealed — original left untouched; delete it yourself once you've checked it."
-          : "Saved to Photos — original left untouched; delete it yourself once you've checked it. (Couldn't auto-reveal it.)",
-      });
-      if (typeof data.savings_total_bytes === "number") {
-        setSavedBytes(data.savings_total_bytes);
-        refreshStats(); // keep the main page's reclaimed total in step
+      if (res.status === 409) {
+        setExportResult({ ok: false, message: data.error || "An export is already running." });
+        if (data.status) setExportJob(data.status);
+        return;
       }
-      setVideos((prev) => prev.map((v) =>
-        v.video_id === selectedVideoId
-          ? {
-              ...v,
-              verdict: data.verdict || v.verdict,
-              exported_at: data.exported_at,
-              regions: data.regions || v.regions,
-              cut_segments: data.cut_segments || v.cut_segments,
-              keep_segments: data.keep_segments || v.keep_segments,
-              trimmed_duration: data.trimmed_duration ?? v.trimmed_duration,
-              edited: data.edited ?? v.edited,
-            }
-          : v
-      ));
+      setExportResult({ ok: false, message: data.error || "Export failed." });
     } catch {
       setExportResult({ ok: false, message: "Could not reach the backend." });
     } finally {
-      setExporting(false);
+      exportInFlightRef.current = false;
     }
-  }, [selectedVideoId, editedRegions, exporting, refreshStats]);
+  }, [selectedVideoId, editedRegions, exportJob]);
+
+  // One-shot fetch on mount, same rationale as EmbedButton: a reload mid-
+  // export (or one that finished while this page was closed) should resume
+  // showing the right state instead of a stale "idle".
+  useEffect(() => {
+    fetch(`${API}/motion-review/export/status`)
+      .then((r) => r.json())
+      .then(setExportJob)
+      .catch(() => {});
+  }, []);
+
+  const exportJobLive = Boolean(exportJob && !TERMINAL_JOB_STATES.has(exportJob.state));
+
+  // The polling loop. 1s, not embed's 2s — a progress bar that steps once
+  // every two seconds reads as broken. Cleans up on unmount and the instant
+  // the job stops being live, same shape as EmbedButton's.
+  useEffect(() => {
+    if (!exportJobLive) return;
+    const id = setInterval(async () => {
+      try {
+        const res = await fetch(`${API}/motion-review/export/status`);
+        setExportJob(await res.json());
+      } catch {
+        // transient — the next tick retries.
+      }
+    }, EXPORT_POLL_MS);
+    return () => clearInterval(id);
+  }, [exportJobLive]);
+
+  // Completion handling, latched on job_id so a poll re-delivering the same
+  // terminal status every second doesn't re-run this. Runs regardless of
+  // which video is currently selected — the job may have been started
+  // against a clip the user has since navigated away from, and /queue +
+  // /savings are the authoritative source for its outcome either way.
+  useEffect(() => {
+    if (!exportJob || exportJob.job_id == null) return;
+    if (exportJob.state !== "done" && exportJob.state !== "failed") return;
+    if (handledJobRef.current === exportJob.job_id) return;
+    handledJobRef.current = exportJob.job_id;
+
+    if (exportJob.state === "done") {
+      const result = exportJob.result || {};
+      const imported = Boolean(result.imported && result.imported.success);
+      const revealed = Boolean(result.revealed && result.revealed.success);
+      let message;
+      if (!imported) {
+        // export_and_import doesn't raise on a failed Photos import — it
+        // still credits savings and comes back {imported: {success: false}}
+        // — so this has to be checked explicitly or a failed import reads as
+        // a plain "Saved to Photos" under a poll.
+        const detail = result.imported && result.imported.error;
+        message = `Rendered, but importing into Photos failed${detail ? `: ${detail}` : "."} Original left untouched.`;
+      } else {
+        message = revealed
+          ? "Saved to Photos and revealed — original left untouched; delete it yourself once you've checked it."
+          : "Saved to Photos — original left untouched; delete it yourself once you've checked it. (Couldn't auto-reveal it.)";
+      }
+      setExportResult({ ok: imported, message });
+      // /queue and /savings are authoritative and already carry every field
+      // the old code hand-folded onto `videos` — no need to reshape here,
+      // and it can't accidentally write the wrong row if the user switched
+      // clips mid-export.
+      loadQueue();
+      refreshStats();
+    } else {
+      setExportResult({ ok: false, message: exportJob.error || "Export failed." });
+    }
+  }, [exportJob, loadQueue, refreshStats]);
 
   // Save = persist the CURRENT in-progress edit as a resumable draft, distinct
   // from export. Fires only from the header save icon. No ledger/audit write on
@@ -299,6 +379,15 @@ export default function MotionReviewApp({ onExit }) {
     }
   }, []);
 
+  // Everything VerdictButtons is allowed to show is gated on the job actually
+  // belonging to the CURRENTLY SELECTED video — exportJob itself is global
+  // (one export anywhere, by construction), so without this a poll for a
+  // clip the user has since navigated away from would decorate whatever is
+  // on screen now instead.
+  const jobForSelected = (exportJob && exportJob.video_id === selectedVideoId) ? exportJob : null;
+  const exportingSelected = Boolean(jobForSelected && !TERMINAL_JOB_STATES.has(jobForSelected.state));
+  const resultForSelected = jobForSelected ? exportResult : null;
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "#0a0a0a", display: "flex", flexDirection: "column", zIndex: 100 }}>
       {/* Distinct top bar — signals "different room" */}
@@ -384,8 +473,9 @@ export default function MotionReviewApp({ onExit }) {
                     onRejectAndRemove={rejectAndRemove}
                     onRemoveOnly={removeOnly}
                     onExport={runExport}
-                    exporting={exporting}
-                    exportResult={exportResult}
+                    exporting={exportingSelected}
+                    exportJob={jobForSelected}
+                    exportResult={resultForSelected}
                   />
                 </div>
               )}

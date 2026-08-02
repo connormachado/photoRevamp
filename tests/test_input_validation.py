@@ -15,6 +15,7 @@ Unbounded, it is a one-request way to make the server walk the entire index.
 """
 
 import base64
+import time
 
 import pytest
 
@@ -239,6 +240,7 @@ class TestNoRouteReturnsFiveHundred:
     """A sweep, so a newly added route inherits the rule without a bespoke test."""
 
     GET_ROUTES = ["/stats", "/motion-review/queue", "/motion-review/savings",
+                  "/motion-review/export/status",
                   "/api/embed/status", "/filters/dismissed"]
     POST_ROUTES = ["/stats/increment", "/search/text", "/search/image",
                    "/motion-review/decision", "/motion-review/draft",
@@ -272,3 +274,95 @@ class TestNoRouteReturnsFiveHundred:
                                                              tmp_motion_db, route):
         resp = client.post(route)
         assert resp.status_code < 500, f"{route} -> {resp.status_code}"
+
+
+# ── export concurrency guard, at the route level ──────────────────────────────
+# export_job.py itself has its own unit-level suite (tests/test_export_job.py);
+# these confirm the 409s actually reach an HTTP client through server.py, since
+# that wiring (the `export_job.is_exporting(...)` guard added to /decision and
+# /remove, plus /export's own kickoff-refusal branch) lives entirely in the
+# route layer this file otherwise covers.
+
+class TestExportConcurrencyGuard:
+    def _block_an_export(self, tmp_motion_db, monkeypatch, video_id="vid1"):
+        """Start a real background job whose export_to_photos is stubbed to
+        block on an Event, and return that Event so the caller can release it.
+        Blocks on `started` so the caller never races the guard against a job
+        that hasn't actually begun yet."""
+        import threading
+
+        import export_job
+        import motion_review
+
+        tmp_motion_db.proposal(video_id)
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_export(vid, regions=None, cut_segments=None, progress_cb=None):
+            started.set()
+            release.wait(timeout=5)
+            return {"ok": True}
+
+        monkeypatch.setattr(motion_review, "export_to_photos", fake_export)
+        result = export_job.start_export(video_id)
+        assert result["started"] is True
+        assert started.wait(timeout=2), "the background job never started"
+        return release
+
+    def _finish(self, release):
+        """Release the blocked job and wait for it to reach a terminal state,
+        so it can never leak a live thread into a later test."""
+        import export_job
+
+        release.set()
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if export_job.read_status().get("state") in ("done", "failed"):
+                return
+            time.sleep(0.02)
+
+    def test_decision_is_refused_while_an_export_is_in_flight(
+        self, client, tmp_motion_db, monkeypatch
+    ):
+        release = self._block_an_export(tmp_motion_db, monkeypatch)
+        try:
+            resp = client.post("/motion-review/decision",
+                               json={"video_id": "vid1", "verdict": "approve"})
+            assert resp.status_code == 409
+        finally:
+            self._finish(release)
+
+    def test_remove_is_refused_while_an_export_is_in_flight(
+        self, client, tmp_motion_db, monkeypatch
+    ):
+        release = self._block_an_export(tmp_motion_db, monkeypatch)
+        try:
+            resp = client.post("/motion-review/remove", json={"video_id": "vid1"})
+            assert resp.status_code == 409
+        finally:
+            self._finish(release)
+
+    def test_a_second_export_kickoff_is_refused_while_one_is_in_flight(
+        self, client, tmp_motion_db, monkeypatch
+    ):
+        release = self._block_an_export(tmp_motion_db, monkeypatch)
+        try:
+            resp = client.post("/motion-review/export", json={"video_id": "vid1"})
+            assert resp.status_code == 409
+        finally:
+            self._finish(release)
+
+    def test_the_guard_is_scoped_to_the_video_actually_exporting(
+        self, client, tmp_motion_db, monkeypatch
+    ):
+        """A DIFFERENT video's /decision must not be caught by another
+        video's in-flight export — the guard checks video_id, not "is
+        anything at all exporting"."""
+        release = self._block_an_export(tmp_motion_db, monkeypatch, video_id="vid1")
+        try:
+            tmp_motion_db.proposal("vid2")
+            resp = client.post("/motion-review/decision",
+                               json={"video_id": "vid2", "verdict": "reject"})
+            assert resp.status_code != 409
+        finally:
+            self._finish(release)

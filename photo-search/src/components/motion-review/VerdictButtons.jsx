@@ -25,6 +25,15 @@ import { formatBytes } from "./format";
  * the same export, and a removal has to do list surgery this component can't
  * see.
  */
+// export_job.py phases -> a plain-English status line. "queued" reads as
+// "starting…" because the background thread may not have even begun
+// rendering yet — this component only knows what the last poll said.
+const PHASE_LABELS = {
+  queued: "starting…",
+  importing: "importing into Photos…",
+  revealing: "revealing…",
+};
+
 export default function VerdictButtons({
   videoId,
   currentVerdict,
@@ -35,6 +44,7 @@ export default function VerdictButtons({
   onRemoveOnly,
   onExport,
   exporting,
+  exportJob,
   exportResult,
 }) {
   const [pressed, setPressed] = useState(null); // "reject" | "save" | null
@@ -90,6 +100,15 @@ export default function VerdictButtons({
   const busy = rejecting || removingOnly || exporting;
   const isReject = currentVerdict === "reject";
   const isSaved = Boolean(exportedAt);
+
+  // export_job.py reports "rendering" with a 0..1 `progress`; the other live
+  // phases (queued/importing/revealing) carry no sub-progress of their own,
+  // so PHASE_LABELS covers those and "rendering" gets its own templated line
+  // with the live percentage.
+  const pct = exportJob ? Math.round((exportJob.progress || 0) * 100) : 0;
+  const phaseLabel = exportJob && exportJob.state === "rendering"
+    ? `rendering… ${pct}%`
+    : (exportJob && PHASE_LABELS[exportJob.state]) || null;
 
   // Both domes are the same size. At 118px a pair plus the gap fits the 280px
   // rail with room for its padding.
@@ -290,12 +309,35 @@ export default function VerdictButtons({
         </button>
       </div>
 
-      {/* Status line: export outcome wins, otherwise the recorded verdict. */}
+      {/* Status line: export outcome wins, otherwise the recorded verdict.
+          While exporting, this reflects export_job.py's actual phase rather
+          than a static "a few seconds" string — a real re-encode is minutes,
+          not seconds, and the whole point of the background job is to show
+          that honestly instead of implying a hang. */}
       <div style={{ marginTop: 14, minHeight: 30, textAlign: "center", padding: "0 4px" }}>
         {exporting ? (
-          <span style={{ color: "#5eead4", fontSize: 11, lineHeight: 1.5 }}>
-            rendering &amp; importing — this takes a few seconds…
-          </span>
+          <div>
+            <span style={{ color: "#5eead4", fontSize: 11, lineHeight: 1.5 }}>
+              {phaseLabel || "starting…"}
+            </span>
+            <div style={{
+              marginTop: 6,
+              width: 90,
+              height: 4,
+              borderRadius: 2,
+              background: "#173934",
+              overflow: "hidden",
+              marginLeft: "auto",
+              marginRight: "auto",
+            }}>
+              <div style={{
+                width: `${pct}%`,
+                height: "100%",
+                background: "#5eead4",
+                transition: "width 0.3s",
+              }} />
+            </div>
+          </div>
         ) : exportResult ? (
           <span style={{
             color: exportResult.ok ? "#22c55e" : "#f87171",

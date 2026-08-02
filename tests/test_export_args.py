@@ -15,6 +15,8 @@ display matrix or the clip lands sideways in Photos.
 Nothing here runs ffmpeg. `fake_run` records the argv instead.
 """
 
+import re
+
 import pytest
 
 from edit_boundaries import Piece
@@ -352,6 +354,11 @@ def rendering(fake_run, ffmpeg_stderr, tmp_path, monkeypatch):
     src.write_bytes(b"not really a video")
 
     fake_run.install()
+    # Harmless for every test that never passes progress_cb (they never touch
+    # Popen at all); required for TestProgressReporting, which reuses this
+    # same fixture rather than duplicating its EXPORTS_DIR/source/side_effect
+    # setup.
+    fake_run.install_popen()
     fake_run.set_response(stderr=ffmpeg_stderr["iphone_mov"])
 
     def create_output(call):
@@ -474,3 +481,105 @@ class TestRenderPlanRefusals:
         rendering.run.set_response(stderr="Invalid data found", returncode=1)
         with pytest.raises(RuntimeError, match="ffmpeg render failed"):
             rendering.module.render_plan(rendering.source, [Piece(0.0, 5.0)])
+
+
+# ── progress reporting (opt-in via progress_cb) ───────────────────────────────
+
+class TestProgressReporting:
+    """`progress_cb` is strictly opt-in: passing None must reproduce today's
+    exact argv (this is the byte-for-byte pin the export-background-job plan
+    calls for), and passing a callback must add exactly the three `-progress`
+    tokens and nothing else. The render itself goes through `subprocess.Popen`
+    only when a callback is given — `fake_run.install_popen()` on the shared
+    `rendering` fixture covers that without duplicating its setup.
+    """
+
+    def test_the_default_argv_carries_no_progress_flags(self, rendering):
+        rendering.module.render_plan(rendering.source, [Piece(0.0, 5.0)], out_name="out.mp4")
+        cmd = flat(rendering.cmds()[0])
+        assert "-progress" not in cmd
+        assert "-nostats" not in cmd
+
+    def test_a_progress_callback_adds_exactly_three_tokens_and_nothing_else_changes(
+        self, rendering
+    ):
+        """The load-bearing pin: same out_name, so the only argv difference
+        between these two calls may be the three progress tokens spliced in
+        right before the final (output path) token.
+
+        Each call gets its OWN `tempfile.mkdtemp()` (rendering's -f concat
+        `list.txt` lives there), so the `-i <tmp>/list.txt` token legitimately
+        differs run to run — that randomness is normalized away before the
+        comparison, it is not part of what this test is pinning.
+        """
+        def normalize(argv):
+            return [re.sub(r"vx_render_[^/\\]+", "vx_render_X", str(a)) for a in argv]
+
+        rendering.module.render_plan(rendering.source, [Piece(0.0, 5.0)], out_name="out.mp4")
+        plain_argv = normalize(rendering.cmds()[0])
+
+        rendering.module.render_plan(
+            rendering.source, [Piece(0.0, 5.0)], out_name="out.mp4",
+            progress_cb=lambda f: None,
+        )
+        with_cb_argv = normalize(rendering.cmds()[-1])
+
+        assert with_cb_argv == plain_argv[:-1] + ["-progress", "pipe:1", "-nostats", plain_argv[-1]]
+
+    def test_the_derotate_remux_pass_never_carries_progress_flags(self, rendering):
+        """The filtered path's second, stream-copy pass is a sub-second remux
+        with no sub-progress of its own — it gets no flags, callback or not."""
+        rendering.module.render_plan(
+            rendering.source, [Piece(0.0, 5.0, speed=2.0)], out_name="out.mp4",
+            progress_cb=lambda f: None,
+        )
+        cmds = rendering.cmds()
+        assert len(cmds) == 2, "expected an encode pass and a stream-copy pass"
+        remux = flat(cmds[-1])
+        assert "-progress" not in remux and "-nostats" not in remux
+        assert "-display_rotation 0" in remux and "-c copy" in remux
+
+    def test_progress_lines_produce_monotonic_fractions_between_0_and_1(self, rendering):
+        rendering.run.popen_stdout = [
+            "out_time_us=0\n",
+            "out_time_us=2500000\n",
+            "out_time_us=5000000\n",
+            "out_time_us=10000000\n",
+            "progress=end\n",
+        ]
+        seen = []
+        rendering.module.render_plan(
+            rendering.source, [Piece(0.0, 10.0)], out_name="out.mp4",
+            progress_cb=seen.append,
+        )
+        assert seen, "no progress at all was reported"
+        assert seen == sorted(seen), "fractions must never go backwards"
+        assert all(0.0 <= f <= 1.0 for f in seen)
+        assert seen[-1] == pytest.approx(1.0)
+
+    def test_unparseable_progress_lines_are_skipped_without_erroring(self, rendering):
+        rendering.run.popen_stdout = [
+            "frame=1\n", "fps=30\n", "bitrate=N/A\n", "not a progress line at all\n",
+        ]
+        seen = []
+        out = rendering.module.render_plan(
+            rendering.source, [Piece(0.0, 5.0)], out_name="out.mp4",
+            progress_cb=seen.append,
+        )
+        assert out.exists(), "unparseable progress lines must not fail the render"
+        assert seen == []
+
+    def test_a_speed_region_never_reports_over_100_percent(self, rendering):
+        """A 2x piece over 10 SOURCE seconds produces 5 OUTPUT seconds, and
+        ffmpeg's own out_time_us tracks OUTPUT position — so the denominator
+        must be the output duration, not the source span, or this would
+        (harmlessly, but confusingly) report 200%."""
+        rendering.run.popen_stdout = ["out_time_us=5000000\n"]  # all 5 output seconds
+        seen = []
+        rendering.module.render_plan(
+            rendering.source, [Piece(0.0, 10.0, speed=2.0)], out_name="out.mp4",
+            progress_cb=seen.append,
+        )
+        assert seen
+        assert max(seen) <= 1.0
+        assert seen[-1] == pytest.approx(1.0)

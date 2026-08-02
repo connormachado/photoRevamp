@@ -31,6 +31,7 @@ import motion_review
 import queue_removal
 import video_upload
 import embed_job
+import export_job
 import stats as stats_store
 import safe_paths
 import dismissed as dismissed_store
@@ -443,6 +444,12 @@ def motion_review_decision():
     cut_segments = data.get("cut_segments")  # legacy shape, still accepted
     if not video_id:
         return jsonify({"error": "no video_id provided"}), 400
+    # Export now runs on a background thread (export_job.py), which removed
+    # the UI interlock that used to make this unreachable: a reject landing
+    # mid-render could race export_to_photos's own decision/_apply_savings
+    # call, leaving a review that reads both "rejected" and "exported".
+    if export_job.is_exporting(video_id):
+        return jsonify({"error": "an export is in progress for this video"}), 409
     try:
         record = motion_review.record_decision(video_id, verdict, regions, cut_segments)
     except ValueError as e:
@@ -464,6 +471,10 @@ def motion_review_remove():
     video_id = data.get("video_id", "")
     if not video_id:
         return jsonify({"error": "no video_id provided"}), 400
+    # A running export can be mid-render against this video's source file —
+    # unlinking it out from under ffmpeg is exactly what this guard prevents.
+    if export_job.is_exporting(video_id):
+        return jsonify({"error": "an export is in progress for this video"}), 409
     try:
         record = queue_removal.remove_from_queue(video_id)
     except ValueError as e:          # includes safe_paths.UnsafePathError
@@ -475,10 +486,17 @@ def motion_review_remove():
 
 @app.route("/motion-review/export", methods=["POST"])
 def motion_review_export():
-    """Render the kept footage, import it into Photos, reveal it, and log it.
+    """Kick off a background export (render → import into Photos → reveal).
 
     This is the green save button: approving a trim and writing it out are one
     action. The original is never touched — the export lands beside it.
+
+    Returns immediately (202) with a job-status payload rather than blocking
+    on the render — a real clip's re-encode is minutes, not the seconds the
+    old synchronous response implied. Poll GET /motion-review/export/status
+    for progress; a render failure now surfaces there (`state: "failed"`)
+    rather than as a 500 from this route, since by the time it fails this
+    request has long since returned.
     """
     data = _json_body()
     video_id = data.get("video_id", "")
@@ -487,14 +505,21 @@ def motion_review_export():
     if not video_id:
         return jsonify({"error": "no video_id provided"}), 400
     try:
-        record = motion_review.export_to_photos(video_id, regions, cut_segments)
-    except ValueError as e:
+        kickoff = export_job.start_export(video_id, regions, cut_segments)
+    except ValueError as e:          # includes safe_paths.UnsafePathError
         return jsonify({"error": str(e)}), 400
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 404
-    except RuntimeError as e:
-        return jsonify({"error": str(e)}), 500
-    return jsonify(record)
+    if not kickoff["started"]:
+        code = 409 if kickoff["reason_code"] == "already_running" else 400
+        return jsonify({"error": kickoff["reason"], "status": kickoff["status"]}), code
+    return jsonify(kickoff["status"]), 202
+
+
+@app.route("/motion-review/export/status")
+def motion_review_export_status():
+    """Poll the one in-flight (or most recently finished) export's progress."""
+    return jsonify(export_job.read_status())
 
 
 @app.route("/motion-review/draft", methods=["POST"])
