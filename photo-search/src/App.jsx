@@ -8,6 +8,7 @@ import DeleteCounter from "./components/DeleteCounter";
 import { StatsProvider } from "./context/StatsContext";
 import GraphView from "./components/GraphView";
 import MotionReviewApp from "./components/motion-review/MotionReviewApp";
+import SettingsButton from "./components/settings/SettingsButton";
 
 const API = "http://localhost:5001";
 
@@ -457,22 +458,25 @@ export default function App() {
       <div style={{ minHeight: "100vh", padding: "40px 24px" }}>
         {/* Header */}
         <div style={{ maxWidth: 960, margin: "0 auto 40px" }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 6 }}>
-            <h1 style={{
-              fontSize: 28,
-              fontWeight: 700,
-              letterSpacing: "-0.5px",
-              background: "linear-gradient(135deg, #e5e5e5 0%, #818cf8 100%)",
-              WebkitBackgroundClip: "text",
-              WebkitTextFillColor: "transparent",
-            }}>
-              photo memory
-            </h1>
-            {stats && (
-              <span style={{ color: "#444", fontSize: 13, fontFamily: "monospace" }}>
-                {stats.total.toLocaleString()} photos indexed
-              </span>
-            )}
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+              <h1 style={{
+                fontSize: 28,
+                fontWeight: 700,
+                letterSpacing: "-0.5px",
+                background: "linear-gradient(135deg, #e5e5e5 0%, #818cf8 100%)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}>
+                photo memory
+              </h1>
+              {stats && (
+                <span style={{ color: "#444", fontSize: 13, fontFamily: "monospace" }}>
+                  {stats.total.toLocaleString()} photos indexed
+                </span>
+              )}
+            </div>
+            <SettingsButton />
           </div>
           <p style={{ color: "#555", fontSize: 14 }}>
             Search your entire library with natural language, or drop a photo to find similar ones.
