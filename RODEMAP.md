@@ -265,6 +265,15 @@ render pipeline.
   suite confirming the two callbacks (`onRemoveOnly` vs `onRejectAndRemove`) can't be
   swapped without failing loudly.
 
+- ✅ **HTTP Range support confirmed on `/motion-review/source`** (Aug 2026). Investigated
+  per a prompt asking to add 206/`Content-Range` streaming so the review-stage `<video>`
+  can scrub a multi-GB proxy without downloading it whole. Needed no code change — Flask
+  3.1's `send_file(conditional=True)` default already handles it (live-verified: 206 +
+  correct `Content-Range` + a byte-exact partial body, via Werkzeug's seek-based
+  `_RangeWrapper`, not a full in-memory read), and the traversal guard is untouched by a
+  `Range` header. Added `TestSourceRangeSupport` (`tests/test_route_security.py`) as the
+  regression net that didn't exist before.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

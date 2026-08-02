@@ -22,6 +22,7 @@ having written the file would pass a status-only test.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -298,6 +299,64 @@ class TestVideoIdStillWorks:
         resp = client.post("/motion-review/draft",
                            json={"video_id": video_id, "regions": []})
         assert resp.status_code == 200
+
+
+# ── /motion-review/source Range support ──────────────────────────────────────
+
+class TestSourceRangeSupport:
+    """`send_file`'s default `conditional=True` is what lets the review-stage
+    <video> scrub a multi-GB proxy without downloading it whole. This pins that
+    behaviour down: a 206 with a correct Content-Range and a body that is ONLY
+    the requested window, not the full file re-sliced client-side."""
+
+    VIDEO_ID = "b4c5d6e7f8091a2b3c4d5e6f7081920a"
+    PROXY_BYTES = bytes(range(256)) * 40   # 10240 bytes, position is recoverable
+
+    @pytest.fixture
+    def proxied_video(self, client, tmp_motion_db, fake_run, ffmpeg_stderr, tmp_path):
+        """A proposal whose h264 proxy is faked into existence with known bytes."""
+        source = tmp_path / "clip.mov"
+        source.write_bytes(b"source bytes, never served directly")
+        tmp_motion_db.proposal(self.VIDEO_ID, source_path=str(source))
+
+        fake_run.install()
+        fake_run.set_response(stderr=ffmpeg_stderr["iphone_mov"])
+
+        def fake_ffmpeg(call):
+            argv = [str(a) for a in (call.argv or [])]
+            if not argv or "-y" not in argv:
+                return                  # the playability probe: reads, writes nothing
+            Path(argv[-1]).write_bytes(self.PROXY_BYTES)
+
+        fake_run.side_effect = fake_ffmpeg
+        return self.VIDEO_ID
+
+    def test_a_full_request_advertises_range_support(self, client, proxied_video):
+        resp = client.get(f"/motion-review/source?id={proxied_video}")
+        assert resp.status_code == 200
+        assert resp.headers.get("Accept-Ranges") == "bytes"
+        assert resp.data == self.PROXY_BYTES
+
+    def test_a_range_request_returns_206_with_only_the_requested_window(
+        self, client, proxied_video
+    ):
+        resp = client.get(f"/motion-review/source?id={proxied_video}",
+                          headers={"Range": "bytes=1000-2000"})
+
+        assert resp.status_code == 206
+        assert resp.headers.get("Content-Range") == \
+            f"bytes 1000-2000/{len(self.PROXY_BYTES)}"
+        assert resp.headers.get("Content-Length") == "1001"
+        # Not just the right SIZE — the right BYTES, proving it seeked rather
+        # than reading the whole file and truncating client-side.
+        assert resp.data == self.PROXY_BYTES[1000:2001]
+
+    def test_a_traversing_id_is_refused_even_with_a_range_header(
+        self, client, tmp_motion_db
+    ):
+        resp = client.get("/motion-review/source?id=../../../etc/passwd",
+                          headers={"Range": "bytes=0-100"})
+        assert 400 <= resp.status_code < 500
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
