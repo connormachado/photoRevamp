@@ -234,6 +234,30 @@ class TestDecisionsLeaveTheSourceAlone:
 
         assert fingerprint(queued_video.src) == before
 
+    def test_removing_the_queue_entry_spares_a_referenced_source(self, queued_video):
+        """Removal is the feature this file was written in anticipation of. The
+        fixture's source lives in library/, i.e. the app only REFERENCES it, so
+        dropping the row must free nothing outside the app's own tree."""
+        import queue_removal
+
+        before = snapshot_tree(queued_video.library_dir)
+
+        result = queue_removal.remove_from_queue(queued_video.video_id)
+
+        assert snapshot_tree(queued_video.library_dir) == before
+        assert result["deleted_source"] is False
+
+    def test_removing_an_exported_video_still_spares_the_source(self, queued_video):
+        import queue_removal
+
+        queued_video.module.export_to_photos(queued_video.video_id, regions=CUT_REGIONS)
+        before = fingerprint(queued_video.src)
+
+        queue_removal.remove_from_queue(queued_video.video_id)
+
+        assert queued_video.src.exists()
+        assert fingerprint(queued_video.src) == before
+
 
 # ── 3. preview proxy ──────────────────────────────────────────────────────────
 
@@ -278,6 +302,10 @@ class TestOnlyAppCreatedFilesAreDeleted:
         queued_video.module.export_to_photos(queued_video.video_id, regions=CUT_REGIONS)
         queued_video.module.record_decision(queued_video.video_id, "reject")
         queued_video.module.source_h264_path(queued_video.video_id)
+        # Removal deletes files by design, which is exactly why it belongs in
+        # the lifecycle this test sweeps rather than in a carve-out beside it.
+        import queue_removal
+        queue_removal.remove_from_queue(queued_video.video_id)
 
         after = snapshot_tree(tmp_path)
         vanished = set(before) - set(after)
@@ -285,6 +313,37 @@ class TestOnlyAppCreatedFilesAreDeleted:
         assert vanished, "no file was deleted at all — this test proved nothing"
         assert not draft.exists(), "the export should have cleared the draft"
 
+        app_owned = self._app_owned(queued_video)
+        for rel in vanished:
+            path = (tmp_path / rel).resolve()
+            assert any(path.is_relative_to(root) for root in app_owned), (
+                f"the app deleted {path}, which it did not create"
+            )
+
+    def test_deleting_a_working_copy_stays_inside_the_apps_tree(
+        self, queued_video, tmp_path
+    ):
+        """The one case where a *source* is deleted on purpose. It has to land
+        inside the same boundary as every other deletion, or the promise is that
+        the app deletes originals it happens to like the look of."""
+        import queue_removal
+
+        uploads = queue_removal._uploads_dir() / "contenthash"
+        uploads.mkdir(parents=True)
+        working_copy = uploads / "IMG_UPLOADED.mov"
+        working_copy.write_bytes(b"a copy the app made for itself")
+        queued_video.db.proposal(
+            video_id="ownedvid", source_path=str(working_copy), owned=True
+        )
+
+        before = snapshot_tree(tmp_path)
+        queue_removal.remove_from_queue("ownedvid")
+        after = snapshot_tree(tmp_path)
+
+        vanished = set(before) - set(after)
+        assert str(working_copy.relative_to(tmp_path)) in vanished, (
+            "the working copy was supposed to be freed"
+        )
         app_owned = self._app_owned(queued_video)
         for rel in vanished:
             path = (tmp_path / rel).resolve()

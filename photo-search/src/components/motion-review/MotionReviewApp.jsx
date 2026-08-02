@@ -210,33 +210,57 @@ export default function MotionReviewApp({ onExit }) {
     }
   }, [uploading, loadQueue]);
 
-  // After a verdict: badge the video, fold in any edited boundaries, update the
-  // reclaimed pool, then jump to the next unreviewed video.
-  const handleDecided = useCallback((data) => {
-    if (typeof data.savings_total_bytes === "number") {
-      setSavedBytes(data.savings_total_bytes);
-      refreshStats(); // keep the main page's reclaimed total in step
+  // Reject: record the verdict, THEN drop the row. Two requests on purpose —
+  // /decision writes the history that outlives the entry, /remove is the
+  // cleanup. Deliberately not routed through handleDecided, whose auto-advance
+  // would select the very row that is about to disappear.
+  const rejectAndRemove = useCallback(async (videoId) => {
+    try {
+      const dRes = await fetch(`${API}/motion-review/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: videoId, verdict: "reject" }),
+      });
+      const decision = await dRes.json();
+      if (!dRes.ok) {
+        setUploadStatus(decision.error || "Could not record the rejection.");
+        return;
+      }
+      if (typeof decision.savings_total_bytes === "number") {
+        setSavedBytes(decision.savings_total_bytes);
+        refreshStats(); // keep the main page's reclaimed total in step
+      }
+
+      const rRes = await fetch(`${API}/motion-review/remove`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: videoId }),
+      });
+      const removal = await rRes.json();
+      if (!rRes.ok) {
+        // The verdict landed, so the row stays and shows "rejected" — the
+        // pre-teeth behaviour, which is a safe place to be stuck.
+        setUploadStatus(removal.error || "Rejected, but the entry could not be removed.");
+        return;
+      }
+
+      setVideos((prev) => {
+        const next = prev.filter((v) => v.video_id !== videoId);
+        setSelectedVideoId((cur) => {
+          if (cur !== videoId) return cur;
+          const unreviewed = next.find((v) => v.verdict == null);
+          return unreviewed ? unreviewed.video_id : (next[0] ? next[0].video_id : null);
+        });
+        return next;
+      });
+      const freed = removal.freed_bytes
+        ? ` · freed ${formatBytes(removal.freed_bytes)}`
+        : "";
+      setUploadStatus(`Removed ${removal.source_name}${freed}`);
+    } catch {
+      setUploadStatus("Could not reach the backend.");
     }
-    setVideos((prev) => {
-      const next = prev.map((v) =>
-        v.video_id === selectedVideoId
-          ? {
-              ...v,
-              verdict: data.verdict,
-              regions: data.regions || v.regions,
-              cut_segments: data.cut_segments || v.cut_segments,
-              keep_segments: data.keep_segments || v.keep_segments,
-              trimmed_duration: data.trimmed_duration ?? v.trimmed_duration,
-              estimated_saved_bytes: data.video_saved_bytes ?? v.estimated_saved_bytes,
-              edited: data.edited ?? v.edited,
-            }
-          : v
-      );
-      const nextUnreviewed = next.find((v) => v.verdict == null);
-      if (nextUnreviewed) setSelectedVideoId(nextUnreviewed.video_id);
-      return next;
-    });
-  }, [selectedVideoId, refreshStats]);
+  }, [refreshStats]);
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "#0a0a0a", display: "flex", flexDirection: "column", zIndex: 100 }}>
@@ -318,7 +342,9 @@ export default function MotionReviewApp({ onExit }) {
                     videoId={selectedVideoId}
                     currentVerdict={selected.verdict}
                     exportedAt={selected.exported_at}
-                    onDecided={handleDecided}
+                    owned={selected.owned}
+                    sourceSizeBytes={selected.source_size_bytes}
+                    onRejectAndRemove={rejectAndRemove}
                     onExport={runExport}
                     exporting={exporting}
                     exportResult={exportResult}

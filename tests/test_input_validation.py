@@ -242,7 +242,8 @@ class TestNoRouteReturnsFiveHundred:
                   "/api/embed/status", "/filters/dismissed"]
     POST_ROUTES = ["/stats/increment", "/search/text", "/search/image",
                    "/motion-review/decision", "/motion-review/draft",
-                   "/motion-review/export", "/filters/dismiss", "/filters/restore"]
+                   "/motion-review/export", "/motion-review/remove",
+                   "/filters/dismiss", "/filters/restore"]
 
     JUNK_BODIES = [
         {}, {"unexpected": "field"}, {"video_id": None}, {"query": None},

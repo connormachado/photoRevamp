@@ -154,7 +154,9 @@ def save_and_process(file_storage) -> dict:
             result["status"] = "already_queued"
             return result
 
-        video_motion.process_video(str(dest), video_motion.load_config())
+        # owned=True: `dest` is a copy WE made under uploads/, so removing the
+        # queue entry is allowed to delete it. Nothing else sets this.
+        video_motion.process_video(str(dest), video_motion.load_config(), owned=True)
         result["status"] = "queued"
         return result
 

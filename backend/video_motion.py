@@ -462,13 +462,19 @@ def _try_encode_timelapse(
 
 # ── Orchestration ─────────────────────────────────────────────────────────────
 
-def process_video(video_arg: str, config: dict) -> dict:
+def process_video(video_arg: str, config: dict, owned: bool = False) -> dict:
     """Run the full dead-time detection pipeline for one video.
 
     Writes three artefacts under photo_db/motion_review/:
       clips/<video_id>_trimmed.mp4   — lossless trimmed clip
       cuts/<video_id>_removed.mp4    — timelapse of removed sections (if any)
       proposals/<video_id>.json      — machine-readable summary (atomic write)
+
+    `owned` records who made the bytes at `source_path`: True only when the
+    caller created a disposable copy for us (the upload route), False when the
+    proposal merely *references* a file the user already had. It defaults to
+    False so a new ingest path has to opt in — the flag authorises deletion in
+    `queue_removal.py`, and the safe default for an unknown caller is "not ours".
 
     Returns the proposal dict.
     """
@@ -523,6 +529,7 @@ def process_video(video_arg: str, config: dict) -> dict:
     proposal = {
         "video_id":          video_id,
         "source_path":       str(src.resolve()),
+        "owned":             bool(owned),
         "apple_uuid":        apple_uuid,
         "original_duration": duration,
         "trimmed_duration":  trimmed_duration,

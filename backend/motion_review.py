@@ -229,6 +229,12 @@ def list_queue() -> list[dict]:
     Reads each proposals/*.json, merges its saved verdict, and returns a compact
     per-video payload for the UI. Sorted unreviewed-first, then by creation time.
     """
+    # Deferred: queue_removal imports this module for its guarded path builders,
+    # so importing it at module scope would be a cycle. It owns the answer to
+    # "is this entry's source a copy we made?" and the UI needs that to say what
+    # a removal will actually delete.
+    import queue_removal
+
     videos = []
     if not PROPOSALS_DIR.exists():
         return videos
@@ -295,6 +301,9 @@ def list_queue() -> list[dict]:
             "height": probe.get("height", 0),
             "fps": probe.get("fps", 0),
             "source_size_bytes": size_bytes,
+            # Whether removing this entry may delete its source. `source_path`
+            # itself stays server-side; the UI only needs the verdict.
+            "owned": queue_removal._owned_source(prop) is not None,
             "estimated_saved_bytes": _saved_bytes(size_bytes, orig_dur, trimmed_duration),
             "verdict": review.get("verdict"),
             "edited": bool(review.get("edited")),

@@ -28,6 +28,7 @@ import search
 import graph_view
 import cleanup
 import motion_review
+import queue_removal
 import video_upload
 import embed_job
 import stats as stats_store
@@ -445,6 +446,27 @@ def motion_review_decision():
     try:
         record = motion_review.record_decision(video_id, verdict, regions, cut_segments)
     except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(record)
+
+
+@app.route("/motion-review/remove", methods=["POST"])
+def motion_review_remove():
+    """Drop {"video_id"} from the queue and free the files the app created.
+
+    Separate from /decision on purpose: the verdict is history and stays, the
+    row is cleanup and goes. A source file is only ever deleted when it is a
+    working copy we made — see queue_removal._owned_source.
+    """
+    data = _json_body()
+    video_id = data.get("video_id", "")
+    if not video_id:
+        return jsonify({"error": "no video_id provided"}), 400
+    try:
+        record = queue_removal.remove_from_queue(video_id)
+    except ValueError as e:          # includes safe_paths.UnsafePathError
         return jsonify({"error": str(e)}), 400
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 404

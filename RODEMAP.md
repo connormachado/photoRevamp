@@ -212,6 +212,30 @@ render pipeline.
   icon to the photo detail modal (above "Show in Photos", same button styling), auto-closing
   the modal on success since the photo it was showing no longer belongs in that view.
 
+- ✅ **Reject/remove with teeth** (Aug 2026). Reject used to leave the row in the queue
+  forever wearing a badge; there was no dequeue path in the repo at all, and an upload's
+  few-hundred-MB working copy was never freed. New `backend/queue_removal.py` +
+  `POST /motion-review/remove`, fired by a confirm popover on the red dome *after* the
+  existing `/decision` call — two requests on purpose, so the verdict outlives the entry.
+  The whole design turns on provenance, which the proposal schema didn't record: uploads
+  and hand-fed CLI paths were indistinguishable, and `apple_uuid` is filename-stem garbage
+  (`IMG_8883.mov` → `"IMG"`). `process_video` now takes `owned=`, set True by the upload
+  route alone, and `_owned_source` demands both that flag **and** containment inside
+  `uploads/` via `resolve_within_roots` — so the flag can never authorise a delete on its
+  own, and a symlink out of `uploads/` resolves before comparing and fails. Legacy
+  proposals with no flag infer it from the path; verified against the live queue, where the
+  two real uploads read `owned: true` and the Photos-library original reads `false`.
+  Freed bytes are *reported*, not credited to `stats.json`: the `climb_cutter` slot is an
+  absolute set of `sum(savings.per_video)`, so an accumulator there would be wiped by the
+  next verdict — and an upload copy is a duplicate of a file still in Photos, so counting
+  it beside real photo culls would overstate the headline. Verified by 30 new tests plus a
+  sandboxed run of the real routes against a real 176 MB clip: upload → reject → remove
+  freed 280 MB (copy + derivatives) and left `reviews/` and every prior `decisions.jsonl`
+  line intact; the same round-trip on an external source freed 104 MB of derivatives and
+  left the source byte- and mtime-identical. `tests/test_source_immutability.py` grew
+  removal into the lifecycle it sweeps rather than being loosened — its `_app_owned`
+  boundary already described exactly this rule.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

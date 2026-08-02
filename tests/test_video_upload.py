@@ -69,6 +69,7 @@ def uploads(tmp_path, monkeypatch):
 
         def __init__(self):
             self.analysed = []          # (path_arg, config) per process_video call
+            self.owned_flags = []       # the `owned` each call declared
             self.metadata = {"date": None, "date_utc": None, "gps": None,
                              "rotation": None}
             self.analysis_error = None
@@ -89,8 +90,9 @@ def uploads(tmp_path, monkeypatch):
 
     env = Env()
 
-    def fake_process_video(video_arg, config):
+    def fake_process_video(video_arg, config, owned=False):
         env.analysed.append((video_arg, config))
+        env.owned_flags.append(owned)
         if env.analysis_error is not None:
             raise env.analysis_error
         video_id = file_id(Path(video_arg))
@@ -474,6 +476,15 @@ class TestQueueing:
         [stored] = uploads.stored_files()
         assert Path(path_arg).resolve() == stored.resolve()
         assert config == {"stub_config": True}
+
+    def test_an_upload_is_declared_as_a_copy_the_app_owns(self, uploads):
+        """This route is the ONLY thing that may set owned=True — the flag is
+        what later lets queue_removal delete the file to reclaim disk. A
+        proposal that merely references a file the user already had must not
+        inherit it."""
+        uploads.module.save_and_process(pick("IMG_0001.MOV"))
+
+        assert uploads.owned_flags == [True]
 
     def test_the_staging_file_does_not_survive_a_success(self, uploads):
         uploads.module.save_and_process(pick("IMG_0001.MOV"))
