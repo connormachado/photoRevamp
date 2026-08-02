@@ -81,6 +81,10 @@ and no `/open-in-photos`. Those names are stale; use `/full` and `/reveal`.
 
 ## Conventions
 
+- **Start a task by reading `docs/CODEBASE_MAP.md`** (build it with `/cartographer` if
+  absent) to find where code lives — routes, modules, state owners — *before* dispatching
+  explore agents. It's navigation only: this file remains the authority on gotchas and
+  contracts, so if they disagree, CLAUDE.md wins and the map is stale — regenerate it.
 - **`server.py` stays thin.** It handles routing only. All logic lives in its own module. One route per feature.
 - **One feature per backend file.** New cleanup/clustering logic gets its own module, not appended to an existing one.
 - **One component per feature on the frontend.** Components go in `photo-search/src/components/`.
@@ -111,6 +115,11 @@ back up here:
 - `photo-search/src/components/motion-review/CLAUDE.md` — preview playback: why seeks are
   the expensive operation, the contiguous-piece boundary rule, and how the panels
   approximate speed.
+- `docs/CODEBASE_MAP.md` — **not in the repo.** It's a local, gitignored, regenerable
+  navigation map (route table, module-by-module purposes, on-disk state layouts, sequence
+  diagrams for indexing / search / the Climb Cutter lifecycle) built by the Cartographer
+  plugin. A fresh clone has no `docs/`; run `/cartographer` to build it, and again whenever
+  it's gone stale. Never treat its absence as a bug.
 
 ## Working with the user
 
