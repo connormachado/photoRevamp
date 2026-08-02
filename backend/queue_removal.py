@@ -24,8 +24,16 @@ Neither alone is enough. The flag is a claim written by whatever called
 What survives a removal: `reviews/<id>.json` and every existing line of
 `decisions.jsonl`. Removal is cleanup, not a history rewrite — it appends one
 `action: "remove"` line and rewrites nothing. `savings.json` is left alone too;
-the reject that precedes a removal has already popped the video from it via
-`_apply_savings`.
+when a reject precedes a removal, the reject step (`record_decision` ->
+`_apply_savings`) has already popped the video from it, and `remove_from_queue`
+itself never touches `savings.json` either way.
+
+That makes this function the one place "delete the owned working copy, keep
+the ledger" already lives. Anything that wants that behaviour — the frontend's
+export-only "Remove from queue" action, or a future bulk "purge working
+copies" sweep — must call `remove_from_queue` directly and must NOT route
+through `record_decision`/reject first, which is the only path that retracts
+savings. Conflating the two silently wipes credit the user already earned.
 
 Plain functions only (no Flask); server.py wraps this in a route.
 """

@@ -285,6 +285,66 @@ class TestHistorySurvives:
         }
 
 
+# ── interaction with the savings ledger ──────────────────────────────────────
+
+class TestRemoveFromQueueKeepsSavingsCredit:
+    """`record_decision`'s reject path retracts a video's savings credit
+    (`_apply_savings`); `remove_from_queue` never does. These tests exercise
+    both real entry points together, not just the ledger in isolation, so a
+    change that accidentally routed Remove through record_decision (or
+    dropped reject's retraction) would show up here."""
+
+    def test_removing_an_exported_video_leaves_its_credit_in_place(
+        self, qr, tmp_motion_db, upload_entry
+    ):
+        mr = tmp_motion_db.module
+        decision = mr.record_decision("upl", "approve")
+        assert decision["savings_total_bytes"] > 0
+
+        qr.remove_from_queue("upl")
+
+        assert mr.get_savings()["total_bytes"] == decision["savings_total_bytes"]
+        assert mr.get_savings()["per_video"] == {"upl": decision["video_saved_bytes"]}
+
+    def test_rejecting_still_retracts_before_a_remove_that_follows_it(
+        self, qr, tmp_motion_db, upload_entry
+    ):
+        """The pre-existing Reject button's flow (decision:reject, then
+        remove) must keep retracting — Remove's new ledger-preserving
+        behavior must not leak into it."""
+        mr = tmp_motion_db.module
+        mr.record_decision("upl", "approve")
+
+        rejected = mr.record_decision("upl", "reject")
+        assert rejected["savings_total_bytes"] == 0
+
+        qr.remove_from_queue("upl")
+
+        assert mr.get_savings() == {"total_bytes": 0, "per_video": {}}
+
+    def test_removing_one_exported_video_does_not_disturb_another_videos_credit(
+        self, qr, tmp_motion_db, upload_entry
+    ):
+        """Removing "upl" frees its file but is not a reject, so ITS credit
+        stays too — this only proves the OTHER video's credit is untouched."""
+        mr = tmp_motion_db.module
+        src2_dir = qr._uploads_dir() / "otherhash"
+        src2_dir.mkdir(parents=True)
+        src2 = src2_dir / "IMG_OTHER.mov"
+        src2.write_bytes(UPLOAD_BYTES)
+        tmp_motion_db.proposal(video_id="upl2", source_path=str(src2), owned=True)
+
+        mine = mr.record_decision("upl", "approve")
+        other = mr.record_decision("upl2", "approve")
+
+        qr.remove_from_queue("upl")
+
+        assert mr.get_savings()["per_video"] == {
+            "upl": mine["video_saved_bytes"],
+            "upl2": other["video_saved_bytes"],
+        }
+
+
 # ── bad input ─────────────────────────────────────────────────────────────────
 
 class TestBadInput:

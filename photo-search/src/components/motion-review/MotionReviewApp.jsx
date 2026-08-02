@@ -262,6 +262,43 @@ export default function MotionReviewApp({ onExit }) {
     }
   }, [refreshStats]);
 
+  // Remove from queue ("done" — not a reject): unlike rejectAndRemove above,
+  // this fires /motion-review/remove ONLY. It deliberately never calls
+  // /motion-review/decision, which is the only route that retracts a video's
+  // savings credit (record_decision -> _apply_savings). Skipping that call is
+  // what keeps the reclaimed-bytes total intact — don't "simplify" this by
+  // routing it through rejectAndRemove or the decision endpoint.
+  const removeOnly = useCallback(async (videoId) => {
+    try {
+      const rRes = await fetch(`${API}/motion-review/remove`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: videoId }),
+      });
+      const removal = await rRes.json();
+      if (!rRes.ok) {
+        setUploadStatus(removal.error || "Could not remove this video from the queue.");
+        return;
+      }
+
+      setVideos((prev) => {
+        const next = prev.filter((v) => v.video_id !== videoId);
+        setSelectedVideoId((cur) => {
+          if (cur !== videoId) return cur;
+          const unreviewed = next.find((v) => v.verdict == null);
+          return unreviewed ? unreviewed.video_id : (next[0] ? next[0].video_id : null);
+        });
+        return next;
+      });
+      const freed = removal.freed_bytes
+        ? ` · freed ${formatBytes(removal.freed_bytes)}`
+        : "";
+      setUploadStatus(`Removed ${removal.source_name}${freed} · savings kept`);
+    } catch {
+      setUploadStatus("Could not reach the backend.");
+    }
+  }, []);
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "#0a0a0a", display: "flex", flexDirection: "column", zIndex: 100 }}>
       {/* Distinct top bar — signals "different room" */}
@@ -345,6 +382,7 @@ export default function MotionReviewApp({ onExit }) {
                     owned={selected.owned}
                     sourceSizeBytes={selected.source_size_bytes}
                     onRejectAndRemove={rejectAndRemove}
+                    onRemoveOnly={removeOnly}
                     onExport={runExport}
                     exporting={exporting}
                     exportResult={exportResult}

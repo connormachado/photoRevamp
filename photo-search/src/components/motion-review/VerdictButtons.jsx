@@ -3,19 +3,27 @@ import SaveIcon from "./SaveIcon";
 import { formatBytes } from "./format";
 
 /**
- * The per-video decision pair, at the bottom of the left rail: a red REJECT dome
- * and an equal-sized green SAVE dome, side by side.
+ * The per-video actions at the bottom of the left rail: a red REJECT dome and
+ * an equal-sized green SAVE dome, plus (once a video is exported) a smaller
+ * "Remove from queue" control below them.
  *
- * The two are NOT symmetric in what they do. Reject now has teeth: it records
- * the verdict AND drops the row, freeing the working copy when that copy is one
- * the app made (see queue_removal._owned_source — a referenced Photos original
- * is never touched). Because it destroys something, it is the only action here
- * behind a confirm step. Save is the real other action: it renders the kept
- * footage, imports it into Photos at the original's date, and reveals it there.
- * Saving *is* approving, so there is no separate approve button.
+ * The three are NOT symmetric in what they do. Reject records the verdict AND
+ * drops the row, freeing the working copy when that copy is one the app made
+ * (see queue_removal._owned_source — a referenced Photos original is never
+ * touched) — and because it destroys something AND retracts this video's
+ * savings credit (via record_decision -> _apply_savings on the backend), it
+ * sits behind a confirm step. Save is the real approve action: it renders the
+ * kept footage, imports it into Photos at the original's date, and reveals it
+ * there — there is no separate approve button. Remove from queue is neither:
+ * it only appears once a video is saved, and behind its OWN confirm step it
+ * frees the same owned working copy Reject would, but calls onRemoveOnly
+ * (-> /motion-review/remove alone) rather than onRejectAndRemove, which is
+ * what keeps the savings credit in place. The two confirm popovers share one
+ * absolutely-positioned slot, so opening either closes the other.
  *
- * Both round-trips live in MotionReviewApp — the header save icon fires the same
- * export, and a removal has to do list surgery this component can't see.
+ * All three round-trips live in MotionReviewApp — the header save icon fires
+ * the same export, and a removal has to do list surgery this component can't
+ * see.
  */
 export default function VerdictButtons({
   videoId,
@@ -24,6 +32,7 @@ export default function VerdictButtons({
   owned,
   sourceSizeBytes,
   onRejectAndRemove,
+  onRemoveOnly,
   onExport,
   exporting,
   exportResult,
@@ -31,16 +40,24 @@ export default function VerdictButtons({
   const [pressed, setPressed] = useState(null); // "reject" | "save" | null
   const [confirming, setConfirming] = useState(false);
   const [rejecting, setRejecting] = useState(false);
+  const [confirmingRemoveOnly, setConfirmingRemoveOnly] = useState(false);
+  const [removingOnly, setRemovingOnly] = useState(false);
   const wrapRef = useRef(null);
 
-  // Close the confirm on outside-click and on Escape, like BulkAddPad.
+  // Close either confirm on outside-click and on Escape, like BulkAddPad.
   useEffect(() => {
-    if (!confirming) return;
+    if (!confirming && !confirmingRemoveOnly) return;
     function onDown(e) {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) setConfirming(false);
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+        setConfirming(false);
+        setConfirmingRemoveOnly(false);
+      }
     }
     function onKey(e) {
-      if (e.key === "Escape") setConfirming(false);
+      if (e.key === "Escape") {
+        setConfirming(false);
+        setConfirmingRemoveOnly(false);
+      }
     }
     document.addEventListener("mousedown", onDown);
     document.addEventListener("keydown", onKey);
@@ -48,7 +65,7 @@ export default function VerdictButtons({
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [confirming]);
+  }, [confirming, confirmingRemoveOnly]);
 
   async function confirmRemove() {
     setConfirming(false);
@@ -60,7 +77,17 @@ export default function VerdictButtons({
     }
   }
 
-  const busy = rejecting || exporting;
+  async function confirmRemoveOnly() {
+    setConfirmingRemoveOnly(false);
+    setRemovingOnly(true);
+    try {
+      await onRemoveOnly(videoId);
+    } finally {
+      setRemovingOnly(false);
+    }
+  }
+
+  const busy = rejecting || removingOnly || exporting;
   const isReject = currentVerdict === "reject";
   const isSaved = Boolean(exportedAt);
 
@@ -135,10 +162,64 @@ export default function VerdictButtons({
         </div>
       )}
 
+      {confirmingRemoveOnly && (
+        // Mirrors the reject confirm above, but the copy and the request it
+        // fires are deliberately different — see onRemoveOnly in
+        // MotionReviewApp: it calls /motion-review/remove alone, skipping
+        // /motion-review/decision, so the savings credit this video already
+        // earned is never retracted.
+        <div style={{
+          position: "absolute",
+          bottom: "100%",
+          left: 10,
+          right: 10,
+          marginBottom: 6,
+          zIndex: 110,
+          padding: 14,
+          borderRadius: 12,
+          border: "1px solid #2a2a2a",
+          background: "rgba(20,20,20,0.98)",
+          backdropFilter: "blur(8px)",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.55)",
+          textAlign: "left",
+        }}>
+          <div style={{ color: "#e5e5e5", fontSize: 12.5, fontWeight: 600, lineHeight: 1.45 }}>
+            Remove the local copy? Your export and reclaimed-space total stay
+            — this only frees the working file.
+          </div>
+          <div style={{ marginTop: 7, color: "#7a7a7a", fontSize: 11, lineHeight: 1.45 }}>
+            {owned
+              ? `Frees about ${formatBytes(sourceSizeBytes)} — the copy this app made when you uploaded it.`
+              : "No working copy to delete — this entry only references a file on your Mac, which stays put."}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={() => setConfirmingRemoveOnly(false)} style={{ ...ghostBtn, flex: 1 }}>
+              Cancel
+            </button>
+            <button
+              onClick={confirmRemoveOnly}
+              style={{
+                ...ghostBtn,
+                flex: 1,
+                border: "1px solid rgba(45,212,191,0.4)",
+                background: "rgba(45,212,191,0.08)",
+                color: "#2dd4bf",
+                fontWeight: 700,
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", justifyContent: "center", gap: 16 }}>
         {/* REJECT — record the verdict, then drop the row and free our copy */}
         <button
-          onClick={() => setConfirming((v) => !v)}
+          onClick={() => {
+            setConfirmingRemoveOnly(false);
+            setConfirming((v) => !v);
+          }}
           onMouseDown={() => setPressed("reject")}
           onMouseUp={() => setPressed(null)}
           onMouseLeave={() => setPressed(null)}
@@ -234,6 +315,33 @@ export default function VerdictButtons({
           </span>
         ) : null}
       </div>
+
+      {/* Only offered once a video is exported — before that, Reject already
+          drops the row, and "remove with no verdict" isn't a real workflow. */}
+      {isSaved && (
+        <div style={{ marginTop: 4, textAlign: "center" }}>
+          <button
+            onClick={() => {
+              setConfirming(false);
+              setConfirmingRemoveOnly((v) => !v);
+            }}
+            disabled={busy}
+            title="Remove from queue — free the working copy, keep the reclaimed-space credit"
+            style={{
+              padding: "6px 10px",
+              borderRadius: 7,
+              border: "1px solid #2a2a2a",
+              background: "transparent",
+              color: busy ? "#4b4b4b" : "#7a7a7a",
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: busy ? "default" : "pointer",
+            }}
+          >
+            {removingOnly ? "removing…" : "Remove from queue"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

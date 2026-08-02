@@ -236,6 +236,35 @@ render pipeline.
   removal into the lifecycle it sweeps rather than being loosened — its `_app_owned`
   boundary already described exactly this rule.
 
+- ✅ **Settings modal shell** (Aug 2026). Hamburger (`☰`) button in the header next to the
+  title opens `components/settings/SettingsModal.jsx` — left tab list + right content
+  pane, tabs registered in `settings/tabs.js` as `{id, label, component}` so a real tab is
+  a one-line swap of its file. All seven tabs (Storage, Theme, Photos Library, Export
+  Defaults, Motion Detection, About, Shortcuts) ship as `StubTab` placeholders — no
+  behavior yet, this is scaffolding for later prompts to drop into. Overlay/card chrome
+  reuses `App.jsx`'s photo-detail Modal; Esc + outside-click + cleanup reuses the
+  `BulkAddPad`/`VerdictButtons` listener pattern rather than that Modal's (which lacks
+  Esc and scroll-lock). Body-scroll-lock is new. Build + lint clean (lint shows only the
+  12 pre-existing errors). **Not click-verified in a real browser** — no headless-browser
+  driver (`chromium-cli`/Playwright) was available in the session sandbox; verified via a
+  headless-Chrome `--dump-dom` confirming a clean initial mount with no console errors,
+  plus code-level review against the two reused patterns above. Manual click-through in
+  the actual app is still outstanding.
+
+- ✅ **"Remove from queue" — savings-preserving dequeue** (Aug 2026). A per-video action
+  distinct from Reject, for videos already exported: frees the owned working copy via
+  `queue_removal.remove_from_queue` without ever calling `/motion-review/decision`, so
+  the video's reclaimed-bytes credit is kept rather than retracted. Turned out to need
+  no backend changes — `remove_from_queue` already never touched `savings.json`; only
+  Reject's preceding `/decision` call did. Frontend: a ghost button in `VerdictButtons.jsx`
+  gated on `exportedAt`, its own confirm popover (mutually exclusive with Reject's), wired
+  to a new `removeOnly` handler in `MotionReviewApp.jsx`. 653 pytest + 168 Vitest green,
+  build/lint clean. New tests exercise the real `record_decision` + `remove_from_queue`
+  combo directly (export → remove keeps credit; reject still retracts; one video's
+  removal doesn't disturb another's credit) plus a mutation-tested `VerdictButtons`
+  suite confirming the two callbacks (`onRemoveOnly` vs `onRejectAndRemove`) can't be
+  swapped without failing loudly.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend
