@@ -22,6 +22,8 @@ attacker-controlled AppleScript executes — rather than the mechanism, which
 leaves room to replace the denylist with argv passing later.
 """
 
+from pathlib import Path
+
 import pytest
 
 pytestmark = pytest.mark.slow
@@ -311,20 +313,6 @@ class TestFfconcatQuoting:
         listing = (tmp_path / "list.txt").read_text()
         assert f"file '{src.resolve()}'" in listing
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="KNOWN GAP, flagged rather than papered over — export_video.py:267 "
-               "(and video_motion.py's identical writer) build ffconcat lines with "
-               "f\"file '{src.resolve()}'\", so a source path containing a single "
-               "quote or a newline escapes the quoting and can inject demuxer "
-               "directives into list.txt. NOT currently reachable from the web app: "
-               "uploads go through werkzeug's secure_filename plus an extension "
-               "allowlist (video_upload.py), which strips both characters, and the "
-               "path is always absolute. It IS reachable from the CLI ingest path, "
-               "where video_motion.process_video takes an arbitrary path. The fix "
-               "is to escape ' as '\\'' and reject newlines; deliberately left for "
-               "the hardening pass rather than bundled into the test work.",
-    )
     def test_a_quote_in_the_source_path_cannot_inject_a_directive(self, tmp_path):
         import export_video
         from edit_boundaries import Piece
@@ -342,3 +330,57 @@ class TestFfconcatQuoting:
                     "an unescaped quote ends the filename early, so the rest of "
                     "the path is parsed as ffconcat directives"
                 )
+
+    def test_the_cli_reachable_writer_is_also_safe(self, tmp_path, fake_run):
+        """`video_motion.make_trimmed_clip` is the CLI ingest path's writer —
+        the one an arbitrary filesystem path (not an upload) actually reaches."""
+        import video_motion
+
+        fake = fake_run.install()
+        captured = {}
+
+        def capture(call):
+            i = call.flag_value("-i")
+            if i and "list.txt" in i:
+                captured["listing"] = Path(i).read_text()
+
+        fake.side_effect = capture
+
+        hostile = tmp_path / "cl'ip.mov"
+        hostile.touch()
+        out_path = tmp_path / "out.mkv"
+
+        video_motion.make_trimmed_clip(hostile, [(0.0, 1.0)], out_path)
+
+        assert "listing" in captured, "expected a concat-demuxer ffmpeg call"
+        for line in captured["listing"].splitlines():
+            if line.startswith("file "):
+                assert "'" not in line[len("file "):][1:-1]
+
+    def test_a_newline_in_the_source_path_is_refused_not_written(self, tmp_path):
+        import ffconcat
+
+        # A newline is a valid filename byte on POSIX filesystems (only NUL and
+        # '/' are forbidden), so this is a real reachable path, not a fake one.
+        hostile = tmp_path / "cl\ninject 'evil'.mov"
+        hostile.touch()
+
+        with pytest.raises(ffconcat.UnsafeConcatPathError):
+            ffconcat.concat_path(hostile, tmp_path)
+
+    def test_two_pieces_of_one_hostile_source_share_one_staged_alias(self, tmp_path):
+        import export_video
+        from edit_boundaries import Piece
+
+        hostile = tmp_path / "cl'ip.mov"
+        hostile.touch()
+        export_video._concat_demuxer_cmd(hostile, [Piece(0.0, 1.0), Piece(2.0, 3.0)], tmp_path)
+
+        listing = (tmp_path / "list.txt").read_text()
+        file_lines = [ln for ln in listing.splitlines() if ln.startswith("file ")]
+        assert len(file_lines) == 2
+        assert len(set(file_lines)) == 1, "both pieces should reference the same staged alias"
+
+        aliased_path = Path(file_lines[0][len("file '"):-1])
+        assert aliased_path.is_symlink()
+        assert aliased_path.resolve() == hostile.resolve()

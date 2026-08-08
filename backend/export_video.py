@@ -41,6 +41,7 @@ from pathlib import Path
 
 import imageio_ffmpeg
 
+import ffconcat
 from edit_boundaries import Piece, plan_output_duration
 from utils import DEFAULT_DB_PATH
 
@@ -349,7 +350,7 @@ def _concat_demuxer_cmd(src: Path, pieces: list, tmp_dir: Path) -> list:
     with open(list_txt, "w") as lf:
         lf.write("ffconcat version 1.0\n")
         for p in pieces:
-            lf.write(f"file '{src.resolve()}'\n")
+            lf.write(ffconcat.file_line(src, tmp_dir))
             lf.write(f"inpoint {p.start:.6f}\n")
             lf.write(f"outpoint {p.end:.6f}\n")
 

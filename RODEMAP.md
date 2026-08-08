@@ -319,6 +319,20 @@ render pipeline.
   version of this gotcha). Build/lint clean, 206 Vitest green. Not yet live-verified in a
   running browser — no dev server/library was available in-session.
 
+- ✅ **ffconcat injection fix** (Aug 2026). All three `file '{path}'` writers
+  (`export_video._concat_demuxer_cmd`, `video_motion.make_trimmed_clip`,
+  `make_cuts_timelapse`) now go through new `backend/ffconcat.py` instead of a bare
+  f-string. Refuses paths containing `\n`/`\r`/`\x00` (no ffconcat representation exists);
+  for `'` or `\`, stages a deterministic same-content symlink under a safe name in the
+  render's own temp dir and writes that path instead of escaping — sidesteps needing a
+  correct reading of ffmpeg's quoting rules entirely. Flipped the `xfail(strict)` on
+  `test_a_quote_in_the_source_path_cannot_inject_a_directive` to a real pass; added 3 more
+  tests (CLI-reachable writer, newline refusal, alias reuse across pieces). Verified by
+  fault injection (reverted the fix, confirmed the test went RED, restored, confirmed
+  green) and empirically by rendering real clips named `cl'ip.mov` / `back\slash.mov`
+  through `export_video.render_plan` and playing both back clean. `make test` (687 passed,
+  4 xfailed — unchanged) and `npm run lint` (10 pre-existing errors, unchanged) both green.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend
@@ -326,10 +340,6 @@ render pipeline.
   whether "I don't recognise this" should lose the user's footage at all. Only reachable
   from unsanitised regions (a draft written by a newer build); `sanitize_regions` strips
   unknown types on normal API traffic.
-- **ffconcat quoting**: `export_video.py` and `video_motion.py` write `file '{path}'` lines,
-  so a source path containing `'` or a newline can inject demuxer directives. Not reachable
-  from the web app (`secure_filename` + extension allowlist strip both) but is from the CLI
-  ingest path.
 - `_safe_name` **loses the extension on a non-ASCII filename** — `日本語.mp4` parks as a file
   named `mp4`, and the queue row's `source_name` reads `mp4`. Cosmetic (ffmpeg probes by
   content) but the docstring promises otherwise.

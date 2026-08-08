@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 import imageio_ffmpeg
 
+import ffconcat
 from utils import file_id, DEFAULT_DB_PATH
 
 # ── Paths / constants ─────────────────────────────────────────────────────────
@@ -361,12 +362,11 @@ def make_trimmed_clip(path: Path, keep_segments: list, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_dir = Path(tempfile.mkdtemp(prefix="vm_trim_"))
     try:
-        abs_src = str(path.resolve())
         list_txt = tmp_dir / "list.txt"
         with open(list_txt, "w") as lf:
             lf.write("ffconcat version 1.0\n")
             for s, e in keep_segments:
-                lf.write(f"file '{abs_src}'\n")
+                lf.write(ffconcat.file_line(path, tmp_dir))
                 lf.write(f"inpoint {s:.6f}\n")
                 lf.write(f"outpoint {e:.6f}\n")
 
@@ -418,7 +418,7 @@ def make_cuts_timelapse(
             list_txt = tmp_dir / "list.txt"
             with open(list_txt, "w") as lf:
                 for sp in seg_paths:
-                    lf.write(f"file '{sp.resolve()}'\n")
+                    lf.write(ffconcat.file_line(sp, tmp_dir))
             concat_out = tmp_dir / "concat_cuts.mp4"
             subprocess.run(
                 [FFMPEG, "-y",
