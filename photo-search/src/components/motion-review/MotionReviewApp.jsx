@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import VideoQueue from "./VideoQueue";
 import ReviewStage from "./ReviewStage";
 import VerdictButtons from "./VerdictButtons";
+import CollapsiblePanel from "./CollapsiblePanel";
 import { formatBytes } from "./format";
 import { regionsFromCuts } from "./regions";
 import { useStats } from "../../context/StatsContext";
@@ -445,42 +446,44 @@ export default function MotionReviewApp({ onExit }) {
             {/* Left rail: queue on top, big red/green verdict beneath. Rendered
                 even when the queue is empty — the Add video button lives in its
                 header, and that's exactly when it's needed most. */}
-            <div style={{
-              width: 280,
-              flexShrink: 0,
-              minHeight: 0,
-              borderRight: `1px solid ${ACCENT}22`,
-              display: "flex",
-              flexDirection: "column",
-              background: "#0a2e29",
-            }}>
-              <VideoQueue
-                videos={videos}
-                selectedVideoId={selectedVideoId}
-                onSelect={setSelectedVideoId}
-                onUpload={uploadVideos}
-                uploading={uploading}
-                uploadStatus={uploadStatus}
-              />
-              {selected && (
-                <div style={{ flexShrink: 0, borderTop: `1px solid ${ACCENT}22`, background: "#082521" }}>
-                  <VerdictButtons
-                    key={selectedVideoId}
-                    videoId={selectedVideoId}
-                    currentVerdict={selected.verdict}
-                    exportedAt={selected.exported_at}
-                    owned={selected.owned}
-                    sourceSizeBytes={selected.source_size_bytes}
-                    onRejectAndRemove={rejectAndRemove}
-                    onRemoveOnly={removeOnly}
-                    onExport={runExport}
-                    exporting={exportingSelected}
-                    exportJob={jobForSelected}
-                    exportResult={resultForSelected}
-                  />
-                </div>
-              )}
-            </div>
+            <CollapsiblePanel dock="left">
+              <div style={{
+                width: "100%",
+                height: "100%",
+                minHeight: 0,
+                borderRight: `1px solid ${ACCENT}22`,
+                display: "flex",
+                flexDirection: "column",
+                background: "#0a2e29",
+              }}>
+                <VideoQueue
+                  videos={videos}
+                  selectedVideoId={selectedVideoId}
+                  onSelect={setSelectedVideoId}
+                  onUpload={uploadVideos}
+                  uploading={uploading}
+                  uploadStatus={uploadStatus}
+                />
+                {selected && (
+                  <div style={{ flexShrink: 0, borderTop: `1px solid ${ACCENT}22`, background: "#082521" }}>
+                    <VerdictButtons
+                      key={selectedVideoId}
+                      videoId={selectedVideoId}
+                      currentVerdict={selected.verdict}
+                      exportedAt={selected.exported_at}
+                      owned={selected.owned}
+                      sourceSizeBytes={selected.source_size_bytes}
+                      onRejectAndRemove={rejectAndRemove}
+                      onRemoveOnly={removeOnly}
+                      onExport={runExport}
+                      exporting={exportingSelected}
+                      exportJob={jobForSelected}
+                      exportResult={resultForSelected}
+                    />
+                  </div>
+                )}
+              </div>
+            </CollapsiblePanel>
             {selected ? (
               <ReviewStage
                 key={selectedVideoId}

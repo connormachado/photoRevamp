@@ -358,6 +358,18 @@ render pipeline.
   `c` to add a boundary + Delete to remove it, and the timeline's own zoom control all
   still work unchanged.
 
+- ✅ **Collapsible left queue rail** (Aug 2026). New reusable `CollapsiblePanel.jsx`
+  (`dock="left"|"right"`, curved pull-tab with a flipping chevron, smooth width-collapse)
+  wraps the video queue in `MotionReviewApp.jsx`, freeing ~280px for the middle band on
+  click. The empty tool-rail slot the layout work above left on the right is the intended
+  future `dock="right"` consumer — not wired up yet. The tab sits FLUSH against the panel's
+  real border (not straddling it), with the outline split into a fill-only closed path plus
+  a stroke-only open arc so no second line renders next to the panel's own border; the
+  chevron points into the panel when open, out toward the content when collapsed. Build/lint
+  clean (10 pre-existing errors, unchanged), 687 pytest + 206 Vitest green. Live-verified in
+  a running browser: collapse/expand round-trip, chevron flip, no-scroll contract still
+  holds collapsed or expanded.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend
