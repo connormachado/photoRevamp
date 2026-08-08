@@ -332,6 +332,7 @@ export default function ReviewStage({ video, regions, onRegionsChange, onSaveDra
           regions={regions}
           fps={fps}
           playhead={playhead}
+          videoId={video.video_id}
           onCommit={commitPlayhead}
           onPreview={previewAt}
           onPreviewEnd={endPreview}

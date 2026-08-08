@@ -302,6 +302,23 @@ render pipeline.
   live-verified against a real multi-minute export in the browser (kickoff/poll/guard logic
   is tested; the actual UI progress bar against Photos.app is a human follow-up).
 
+- ✅ **Review-stage timeline zoom + pan** (Aug 2026). `CutTimeline` gained a `pixelsPerSecond`
+  zoom (min = fit-the-whole-clip, max = capped so the viewport never shows less than ~3s at
+  once — a user-requested ceiling, not a per-frame pixel budget), anchored on the playhead so
+  the frame under it never jumps, plus native-scroll panning, a click/drag-to-jump overview
+  strip that's always visible (not just once actually panned), an adaptive timestamp ruler
+  (`niceTickInterval` re-densifies its labels as you zoom), and a zoom-multiplier readout
+  ("5.0x"). New pure module `timelineScale.js` (38 Vitest tests) holds the one time<->pixel
+  mapping + zoom bounds; regions were already stored as timestamps in seconds, so no
+  migration was needed — the "pixels vs timestamps" fork this feature was gated on resolved
+  clean on inspection. One real bug found and fixed mid-build: a negative CSS margin, used to
+  visually close a padding gap above the zoom row, caused the (invisible but still
+  hit-testable) scroll viewport to sit on top of the slider/±buttons and silently eat every
+  click — fixed by moving the hover tooltip's spillover to below the track instead of
+  splitting reserved space above/below (see the motion-review `CLAUDE.md` for the durable
+  version of this gotcha). Build/lint clean, 206 Vitest green. Not yet live-verified in a
+  running browser — no dev server/library was available in-session.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

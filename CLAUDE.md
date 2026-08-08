@@ -150,7 +150,7 @@ under **features → ✅ shipped → verified build log**.
   (`photo_db/motion_review/decisions.jsonl` + per-video `reviews/`).
 - ⚠️ "Show in Photos" intermittently activates Photos.app without landing on the exact photo.
   Cause unconfirmed; the split activate-then-spotlight `osascript` calls are a suspect.
-- ⚠️ `npm run lint` reports ~13 errors (`react-hooks/set-state-in-effect`,
+- ⚠️ `npm run lint` reports 10 errors (`react-hooks/set-state-in-effect`,
   `react-refresh/only-export-components`). The build is unaffected.
 - ⚠️ Settings modal (`photo-search/src/components/settings/`) is UI shell only — all
   seven tabs are `StubTab` placeholders, no tab has real functionality yet.
