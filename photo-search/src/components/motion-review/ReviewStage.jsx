@@ -3,6 +3,8 @@ import SyncedPanels from "./SyncedPanels";
 import CutTimeline from "./CutTimeline";
 import BoundaryToolbar from "./BoundaryToolbar";
 import SaveIcon from "./SaveIcon";
+import CollapsiblePanel from "./CollapsiblePanel";
+import ToolRail, { TOOL_RAIL_WIDTH } from "./ToolRail";
 import { fmtDur, formatBytes } from "./format";
 import {
   regionsToCuts, regionsEqual, outputDuration, addRegionAt, removeRegion, regionsFromCuts,
@@ -82,7 +84,10 @@ function HeaderSaveButton({ onSaveDraft, justSaved }) {
   );
 }
 
-export default function ReviewStage({ video, regions, onRegionsChange, onSaveDraft, draftSaved }) {
+export default function ReviewStage({
+  video, regions, onRegionsChange, onSaveDraft, draftSaved,
+  onAnalyzeMotion, analyzing, analyzeError,
+}) {
   // The playhead is PLACED, not hovered: it only moves on click, drag, ←/→ or
   // real playback. `preview` is the transient hover position — it moves the
   // Original panel so you can see that frame, but never the playhead itself.
@@ -293,8 +298,14 @@ export default function ReviewStage({ video, regions, onRegionsChange, onSaveDra
             onStop={onPlaybackStop}
           />
         </div>
-        {/* Prompt 8 seam: right tool rail renders here. Empty on purpose. */}
-        <div style={{ flexShrink: 0, width: 0 }} />
+        <CollapsiblePanel dock="right" width={TOOL_RAIL_WIDTH}>
+          <ToolRail
+            onAnalyzeMotion={onAnalyzeMotion}
+            analyzing={analyzing}
+            analyzeError={analyzeError}
+            disabled={!video.source_exists}
+          />
+        </CollapsiblePanel>
       </div>
 
       {/* Scrub + edit timeline + frame readout */}

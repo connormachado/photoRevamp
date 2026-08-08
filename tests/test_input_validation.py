@@ -183,7 +183,7 @@ class TestQueryStringParams:
 class TestMotionReviewValidation:
     def test_a_missing_video_id_is_rejected(self, client, tmp_motion_db):
         for route in ["/motion-review/decision", "/motion-review/export",
-                      "/motion-review/draft"]:
+                      "/motion-review/draft", "/motion-review/analyze"]:
             assert client.post(route, json={}).status_code == 400, route
 
     @pytest.mark.parametrize("verdict", ["maybe", "", "APPROVE", 5, None, []])
@@ -245,6 +245,7 @@ class TestNoRouteReturnsFiveHundred:
     POST_ROUTES = ["/stats/increment", "/search/text", "/search/image",
                    "/motion-review/decision", "/motion-review/draft",
                    "/motion-review/export", "/motion-review/remove",
+                   "/motion-review/analyze",
                    "/filters/dismiss", "/filters/restore"]
 
     JUNK_BODIES = [

@@ -540,6 +540,34 @@ def motion_review_draft():
     return jsonify(draft)
 
 
+@app.route("/motion-review/analyze", methods=["POST"])
+def motion_review_analyze():
+    """Re-run dead-time detection for one video already in the queue — the
+    tool-rail "Analyze Motion" button. Synchronous: a single clip's re-run is
+    the same cost class as the existing synchronous upload-time analysis
+    (~0.35x realtime), so this holds the request open rather than adding
+    export_job.py-style background-thread/polling machinery for it."""
+    data = _json_body()
+    video_id = data.get("video_id", "")
+    if not video_id:
+        return jsonify({"error": "no video_id provided"}), 400
+    if export_job.is_exporting(video_id):
+        return jsonify({"error": "an export is in progress for this video"}), 409
+    try:
+        entry = motion_review.reanalyze(video_id)
+    except ValueError as e:          # includes safe_paths.UnsafePathError
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        # process_video's own failures (corrupt file, ffmpeg crash, etc.) —
+        # video_upload.save_and_process treats the same class of failure as a
+        # soft per-file error rather than an opaque 500; mirrored here so the
+        # tool rail gets a readable message instead of a blank/broken state.
+        return jsonify({"error": str(e)}), 500
+    return jsonify(entry)
+
+
 @app.route("/motion-review/upload", methods=["POST"])
 def motion_review_upload():
     """Ingest videos picked in the browser: save the bytes, then analyse each

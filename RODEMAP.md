@@ -370,6 +370,26 @@ render pipeline.
   a running browser: collapse/expand round-trip, chevron flip, no-scroll contract still
   holds collapsed or expanded.
 
+- ✅ **Right tool rail + on-demand Analyze Motion** (Aug 2026). New `CollapsiblePanel(dock="right")`
+  in `ReviewStage.jsx`'s reserved seam, proving the component genuinely dock-agnostic (built
+  dock="left"-only for the queue rail). 2×2 grid (`ToolRail.jsx`) matching `HeaderSaveButton`'s
+  52×52 chrome: Rotate/Crop/Filters are permanently disabled stubs (clean hooks, no handlers);
+  Analyze Motion re-runs `video_motion.process_video` on demand via new
+  `motion_review.reanalyze()` + `POST /motion-review/analyze` — previously the pass only ever
+  ran once, synchronously, at upload/ingest time. Kept synchronous (no `export_job.py`-style
+  background thread/poll) since a single video's re-run is the same cost class as the existing
+  upload-time analysis. `reanalyze()` derives the `owned` flag via
+  `queue_removal._owned_source` rather than a naive `prop.get("owned", False)` read, so a
+  legacy proposal with no `owned` key at all doesn't get silently stripped of delete-eligibility
+  on re-analysis. `list_queue()` was split into a reusable `_queue_entry()`/`get_queue_entry()`
+  so the single-video re-read shares the exact same merge logic rather than drifting from it.
+  723 pytest (+10 new in `tests/test_motion_review_reanalyze.py`, `/analyze` added to the
+  input-validation route sweeps) + build/lint clean (10 pre-existing errors, unchanged).
+  Live-verified end to end against the real server on a real 1:46 clip: spinner during the
+  real ~25s ffmpeg pass, timeline repopulated with fresh suggested cuts (2→3 cuts, duration
+  1:39.8→0:16.3) on completion, disabled stubs fire no requests, both rails collapse
+  independently with no scroll introduced.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

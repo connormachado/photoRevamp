@@ -76,6 +76,18 @@ export default function MotionReviewApp({ onExit }) {
   const [uploadStatus, setUploadStatus] = useState(""); // one line under the queue header
   const draftSavedTimerRef = useRef(null);
   const lastVidRef = useRef(null);
+  // Tool-rail "Analyze Motion": video_id currently being re-analysed, or null.
+  // A plain awaited fetch, not a polled background job like export — a single
+  // video's re-run is the same synchronous cost class as upload-time analysis.
+  const [analyzingVideoId, setAnalyzingVideoId] = useState(null);
+  const [analyzeError, setAnalyzeError] = useState("");
+  const analyzeInFlightRef = useRef(false); // same double-click guard as exportInFlightRef
+  // The user can switch videos while an analyze request is in flight; a late
+  // response must not stomp a DIFFERENT video's live edits, so completion
+  // handling checks this ref (not the closed-over selectedVideoId) before
+  // touching editedRegions/analyzeError.
+  const selectedVideoIdRef = useRef(selectedVideoId);
+  useEffect(() => { selectedVideoIdRef.current = selectedVideoId; }, [selectedVideoId]);
 
   const loadQueue = useCallback(async () => {
     try {
@@ -113,6 +125,7 @@ export default function MotionReviewApp({ onExit }) {
     setEditedRegions(v ? (v.regions || regionsFromCuts(v.cut_segments)) : []);
     setExportResult(null); // last video's outcome shouldn't linger on this one
     setDraftSaved(false);
+    setAnalyzeError(""); // don't leak video A's analyze error onto video B
   }, [selectedVideoId, videos]);
 
   // Save = export: render the kept footage, import it into Photos at the
@@ -254,6 +267,52 @@ export default function MotionReviewApp({ onExit }) {
       /* local-only tool; a failed draft save just means try again later */
     }
   }, [selectedVideoId, editedRegions]);
+
+  // Re-run dead-time detection for the selected video (the "Analyze Motion"
+  // tool-rail button). Unlike runExport this is a plain awaited fetch, not a
+  // polled background job — a single video's re-run is the same synchronous
+  // cost class as the existing upload-time analysis. selectedVideoIdRef (not
+  // the closed-over selectedVideoId) is checked at completion time so a late
+  // response for a video the user has since navigated away from can't stomp
+  // whatever video is now selected.
+  const analyzeMotion = useCallback(async () => {
+    if (!selectedVideoId || analyzeInFlightRef.current) return;
+    const targetVideoId = selectedVideoId;
+    analyzeInFlightRef.current = true;
+    setAnalyzingVideoId(targetVideoId);
+    setAnalyzeError("");
+    try {
+      const res = await fetch(`${API}/motion-review/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: targetVideoId }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (selectedVideoIdRef.current === targetVideoId) {
+          setAnalyzeError(data.error || "Analyze failed.");
+        }
+        return;
+      }
+      // Fold the fresh per-video row into `videos` — same shape /queue
+      // already produces, mirrors saveDraft's fold (see motion-review/CLAUDE.md).
+      setVideos((prev) => prev.map((v) => (v.video_id === targetVideoId ? data : v)));
+      // Wholesale-replace the live edit state with the FRESH proposal — same
+      // derivation the "↺ reset to proposed" button already uses — so the
+      // timeline visibly repopulates with the new suggestions. Only do this
+      // if the user hasn't since switched to a different video.
+      if (selectedVideoIdRef.current === targetVideoId) {
+        setEditedRegions(data.proposed_regions || regionsFromCuts(data.proposed_cut_segments || []));
+      }
+    } catch {
+      if (selectedVideoIdRef.current === targetVideoId) {
+        setAnalyzeError("Could not reach the backend.");
+      }
+    } finally {
+      analyzeInFlightRef.current = false;
+      setAnalyzingVideoId((cur) => (cur === targetVideoId ? null : cur));
+    }
+  }, [selectedVideoId]);
 
   // Add videos from the Mac. The browser only gives us bytes (never a path), so
   // this posts multipart form data; the backend parks the file and runs the same
@@ -492,6 +551,9 @@ export default function MotionReviewApp({ onExit }) {
                 onRegionsChange={setEditedRegions}
                 onSaveDraft={saveDraft}
                 draftSaved={draftSaved}
+                onAnalyzeMotion={analyzeMotion}
+                analyzing={analyzingVideoId === selectedVideoId}
+                analyzeError={analyzeError}
               />
             ) : (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", textAlign: "center", padding: 24 }}>

@@ -25,6 +25,7 @@ import edit_boundaries as eb
 import export_video
 import safe_paths
 import stats as stats_store
+import video_motion
 from utils import DEFAULT_DB_PATH
 
 # Reuse the pip-bundled ffmpeg (same one video_motion.py uses) so we don't depend
@@ -233,11 +234,11 @@ def _clear_draft(video_id: str) -> None:
 
 # ── Queue ─────────────────────────────────────────────────────────────────────
 
-def list_queue() -> list[dict]:
-    """List every processed video awaiting (or with) review.
-
-    Reads each proposals/*.json, merges its saved verdict, and returns a compact
-    per-video payload for the UI. Sorted unreviewed-first, then by creation time.
+def _queue_entry(prop_path: Path) -> dict | None:
+    """Build one list_queue() row from a single proposals/<id>.json path, or
+    None if the file is missing/unreadable. Split out of list_queue() so a
+    single-video re-read (get_queue_entry(), used by reanalyze()) reuses the
+    exact same merge logic instead of drifting from it.
     """
     # Deferred: queue_removal imports this module for its guarded path builders,
     # so importing it at module scope would be a cycle. It owns the answer to
@@ -245,86 +246,100 @@ def list_queue() -> list[dict]:
     # a removal will actually delete.
     import queue_removal
 
+    prop = _read_json(prop_path)
+    if not prop:
+        return None
+    video_id = prop.get("video_id", prop_path.stem)
+    review = _get_verdict(video_id)
+    source_path = prop.get("source_path", "")
+    source_exists = bool(source_path) and os.path.exists(source_path)
+    artifacts = prop.get("artifacts") or {}
+    timelapse = artifacts.get("timelapse")
+    probe = prop.get("probe") or {}
+    orig_dur = prop.get("original_duration", 0)
+    proposed_cuts = prop.get("cut_segments", [])
+
+    # If the video was reviewed WITH edited boundaries, surface those so a
+    # reload resumes with the user's edits. Proposals on disk are never
+    # mutated. Reviews written before the edit-boundary registry existed
+    # carry only cut_segments; they upgrade to cut regions on read.
+    proposed_regions = _proposed_regions(prop)
+    # A draft ALWAYS wins when present, regardless of prior verdict —
+    # re-editing an already-exported video (to tweak before a future
+    # re-export) is a normal thing to do, and the draft is by definition
+    # the most recent thing the user was actively working on. This stays
+    # correct after a real export because export_to_photos clears the
+    # draft the moment it succeeds, so the just-exported review's regions
+    # naturally take back over until a new draft is saved.
+    draft = _get_draft(video_id)
+    if draft.get("regions") is not None:
+        regions = eb.sanitize_regions(draft["regions"], orig_dur)
+    elif review.get("regions") is not None:
+        regions = eb.sanitize_regions(review["regions"], orig_dur)
+    elif review.get("cut_segments") is not None:
+        regions = eb.sanitize_regions(
+            eb.regions_from_cuts(review["cut_segments"]), orig_dur)
+    else:
+        regions = proposed_regions
+
+    derived = _derive(regions, prop)
+    cut_segments = derived["cut_segments"]
+    keep_segments = derived["keep_segments"]
+    trimmed_duration = derived["trimmed_duration"]
+
+    size_bytes = os.path.getsize(source_path) if source_exists else 0
+
+    return {
+        "video_id": video_id,
+        "apple_uuid": prop.get("apple_uuid", ""),
+        "source_name": os.path.basename(source_path) if source_path else video_id,
+        "source_exists": source_exists,
+        "original_duration": orig_dur,
+        "trimmed_duration": trimmed_duration,
+        "regions": regions,                        # ← source of truth
+        "proposed_regions": proposed_regions,
+        "cut_segments": cut_segments,              # ← derived, legacy shape
+        "keep_segments": keep_segments,
+        "proposed_cut_segments": proposed_cuts,
+        "num_cuts": len(cut_segments),
+        "has_timelapse": bool(timelapse) and os.path.exists(timelapse),
+        "width": probe.get("width", 0),
+        "height": probe.get("height", 0),
+        "fps": probe.get("fps", 0),
+        "source_size_bytes": size_bytes,
+        # Whether removing this entry may delete its source. `source_path`
+        # itself stays server-side; the UI only needs the verdict.
+        "owned": queue_removal._owned_source(prop) is not None,
+        "estimated_saved_bytes": _saved_bytes(size_bytes, orig_dur, trimmed_duration),
+        "verdict": review.get("verdict"),
+        "edited": bool(review.get("edited")),
+        "reviewed_at": review.get("reviewed_at"),
+        "exported_at": review.get("exported_at"),
+        "created": prop.get("created", ""),
+    }
+
+
+def list_queue() -> list[dict]:
+    """List every processed video awaiting (or with) review.
+
+    Reads each proposals/*.json, merges its saved verdict, and returns a compact
+    per-video payload for the UI. Sorted unreviewed-first, then by creation time.
+    """
     videos = []
     if not PROPOSALS_DIR.exists():
         return videos
-
     for prop_path in sorted(PROPOSALS_DIR.glob("*.json")):
-        prop = _read_json(prop_path)
-        if not prop:
-            continue
-        video_id = prop.get("video_id", prop_path.stem)
-        review = _get_verdict(video_id)
-        source_path = prop.get("source_path", "")
-        source_exists = bool(source_path) and os.path.exists(source_path)
-        artifacts = prop.get("artifacts") or {}
-        timelapse = artifacts.get("timelapse")
-        probe = prop.get("probe") or {}
-        orig_dur = prop.get("original_duration", 0)
-        proposed_cuts = prop.get("cut_segments", [])
-
-        # If the video was reviewed WITH edited boundaries, surface those so a
-        # reload resumes with the user's edits. Proposals on disk are never
-        # mutated. Reviews written before the edit-boundary registry existed
-        # carry only cut_segments; they upgrade to cut regions on read.
-        proposed_regions = _proposed_regions(prop)
-        # A draft ALWAYS wins when present, regardless of prior verdict —
-        # re-editing an already-exported video (to tweak before a future
-        # re-export) is a normal thing to do, and the draft is by definition
-        # the most recent thing the user was actively working on. This stays
-        # correct after a real export because export_to_photos clears the
-        # draft the moment it succeeds, so the just-exported review's regions
-        # naturally take back over until a new draft is saved.
-        draft = _get_draft(video_id)
-        if draft.get("regions") is not None:
-            regions = eb.sanitize_regions(draft["regions"], orig_dur)
-        elif review.get("regions") is not None:
-            regions = eb.sanitize_regions(review["regions"], orig_dur)
-        elif review.get("cut_segments") is not None:
-            regions = eb.sanitize_regions(
-                eb.regions_from_cuts(review["cut_segments"]), orig_dur)
-        else:
-            regions = proposed_regions
-
-        derived = _derive(regions, prop)
-        cut_segments = derived["cut_segments"]
-        keep_segments = derived["keep_segments"]
-        trimmed_duration = derived["trimmed_duration"]
-
-        size_bytes = os.path.getsize(source_path) if source_exists else 0
-
-        videos.append({
-            "video_id": video_id,
-            "apple_uuid": prop.get("apple_uuid", ""),
-            "source_name": os.path.basename(source_path) if source_path else video_id,
-            "source_exists": source_exists,
-            "original_duration": orig_dur,
-            "trimmed_duration": trimmed_duration,
-            "regions": regions,                        # ← source of truth
-            "proposed_regions": proposed_regions,
-            "cut_segments": cut_segments,              # ← derived, legacy shape
-            "keep_segments": keep_segments,
-            "proposed_cut_segments": proposed_cuts,
-            "num_cuts": len(cut_segments),
-            "has_timelapse": bool(timelapse) and os.path.exists(timelapse),
-            "width": probe.get("width", 0),
-            "height": probe.get("height", 0),
-            "fps": probe.get("fps", 0),
-            "source_size_bytes": size_bytes,
-            # Whether removing this entry may delete its source. `source_path`
-            # itself stays server-side; the UI only needs the verdict.
-            "owned": queue_removal._owned_source(prop) is not None,
-            "estimated_saved_bytes": _saved_bytes(size_bytes, orig_dur, trimmed_duration),
-            "verdict": review.get("verdict"),
-            "edited": bool(review.get("edited")),
-            "reviewed_at": review.get("reviewed_at"),
-            "exported_at": review.get("exported_at"),
-            "created": prop.get("created", ""),
-        })
-
+        entry = _queue_entry(prop_path)
+        if entry:
+            videos.append(entry)
     # Unreviewed first, then oldest-created first for a stable review order.
     videos.sort(key=lambda v: (v["verdict"] is not None, v["created"]))
     return videos
+
+
+def get_queue_entry(video_id: str) -> dict | None:
+    """Same per-video shape list_queue() produces, for exactly one video."""
+    return _queue_entry(_proposal_path(video_id))
 
 
 def get_proposal(video_id: str) -> dict | None:
@@ -334,6 +349,51 @@ def get_proposal(video_id: str) -> dict | None:
         return None
     prop["review"] = _get_verdict(video_id)
     return prop
+
+
+def reanalyze(video_id: str) -> dict:
+    """Re-run dead-time detection for one video already in the queue — the
+    "Analyze Motion" tool-rail button. A genuine re-run, not a one-time gate:
+    works whether this video has been analysed once (always true today, since
+    analysis is synchronous at every ingest point) or many times before.
+
+    Derives `owned` via queue_removal._owned_source (the same expression
+    list_queue()'s own `owned` wire field uses) rather than a literal
+    prop.get("owned", False) read — legacy proposals written before the
+    `owned` field existed carry no such key at all, and _owned_source infers
+    ownership from uploads/ containment. A naive default-False read would
+    permanently strip delete-eligibility from an app-owned working copy the
+    moment it's re-analyzed, since process_video always writes an explicit
+    boolean back.
+
+    Overwrites proposals/<video_id>.json in place — video_id is unchanged
+    (the source path hasn't moved, so file_id() matches). Draft and review
+    files are untouched, so an in-progress edit or a past verdict both
+    survive a re-run.
+
+    Known, accepted side effect: process_video stamps a fresh `created` on
+    every call, and list_queue's sort key is (reviewed?, created) — so this
+    bumps the video to the top of the queue list, as if newly added.
+
+    Raises FileNotFoundError if there is no proposal for video_id, or its
+    source file no longer exists on disk.
+    """
+    import queue_removal  # cycle-break, same as _queue_entry above
+
+    prop = get_proposal(video_id)
+    if prop is None:
+        raise FileNotFoundError(f"no proposal for video_id {video_id!r}")
+    source_path = prop.get("source_path", "")
+    if not source_path or not os.path.exists(source_path):
+        raise FileNotFoundError(f"source file for {video_id!r} no longer exists")
+
+    owned = queue_removal._owned_source(prop) is not None
+    video_motion.process_video(source_path, video_motion.load_config(), owned=owned)
+
+    entry = get_queue_entry(video_id)
+    if entry is None:  # process_video just wrote this file; defensive only
+        raise FileNotFoundError(f"re-analysis of {video_id!r} did not produce a proposal")
+    return entry
 
 
 # ── Preview media ─────────────────────────────────────────────────────────────
