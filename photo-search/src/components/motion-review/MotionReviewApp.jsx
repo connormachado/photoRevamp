@@ -389,7 +389,7 @@ export default function MotionReviewApp({ onExit }) {
   const resultForSelected = jobForSelected ? exportResult : null;
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#0a0a0a", display: "flex", flexDirection: "column", zIndex: 100 }}>
+    <div style={{ position: "fixed", inset: 0, background: "#0a0a0a", display: "flex", flexDirection: "column", overflow: "hidden", zIndex: 100 }}>
       {/* Distinct top bar — signals "different room" */}
       <div style={{
         display: "flex",
@@ -448,6 +448,7 @@ export default function MotionReviewApp({ onExit }) {
             <div style={{
               width: 280,
               flexShrink: 0,
+              minHeight: 0,
               borderRight: `1px solid ${ACCENT}22`,
               display: "flex",
               flexDirection: "column",
@@ -462,7 +463,7 @@ export default function MotionReviewApp({ onExit }) {
                 uploadStatus={uploadStatus}
               />
               {selected && (
-                <div style={{ borderTop: `1px solid ${ACCENT}22`, background: "#082521" }}>
+                <div style={{ flexShrink: 0, borderTop: `1px solid ${ACCENT}22`, background: "#082521" }}>
                   <VerdictButtons
                     key={selectedVideoId}
                     videoId={selectedVideoId}

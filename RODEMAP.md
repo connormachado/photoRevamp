@@ -333,6 +333,31 @@ render pipeline.
   through `export_video.render_plan` and playing both back clean. `make test` (687 passed,
   4 xfailed — unchanged) and `npm run lint` (10 pre-existing errors, unchanged) both green.
 
+- ✅ **Fixed-viewport, no-scroll review-stage layout** (Aug 2026). The editor no longer
+  scrolls at any supported window size — the previous `overflowY:"auto"` column let the
+  scrub/timeline bar fall below the fold on portrait footage, because each panel frame
+  capped itself at a viewport-relative `maxHeight:"64vh"` (`SyncedPanels.jsx`) with no
+  awareness of the ~400px of fixed chrome around it. `ReviewStage.jsx`'s root is now a
+  non-scrolling flex column (header / middle band / scrub band), the scrub band is pinned
+  with `flexShrink:0` so it always wins the layout, and the panel frames dropped the `vh`
+  cap for `flex:"0 1 auto"` + `minHeight:0` so they shrink to whatever height the middle
+  band actually has — landscape clips clip exactly as before, portrait clips letterbox
+  instead of overflowing. Also added an empty, zero-width tool-rail slot in the middle
+  band as the seam for a future right-side tool rail (nothing renders there yet). The
+  scrub band deliberately spans only under the panels/tool-rail, not the full window
+  (i.e. not under the 280px queue rail) — spanning it would mean lifting `playhead`/
+  `seekTarget` out of `ReviewStage` into `MotionReviewApp`, which the load-bearing
+  playhead/seekTarget split documented in `motion-review/CLAUDE.md` argues against; out
+  of scope for a layout fix. Build/lint clean (10 pre-existing errors, unchanged), 687
+  pytest + 206 Vitest green. Live-verified in a running browser: no page- or stage-level
+  scroll at normal window size, and — since the actual trigger is aspect ratio rather
+  than raw window size (the OS window couldn't be resized smaller in the sandboxed
+  browser session) — also verified under a forced portrait (9:19.5) aspect ratio, which
+  is the exact height-bound case that used to overflow (`stage.scrollHeight ===
+  stage.clientHeight` held). Also click-verified: playhead placement, ←/→ frame stepping,
+  `c` to add a boundary + Delete to remove it, and the timeline's own zoom control all
+  still work unchanged.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

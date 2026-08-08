@@ -8,7 +8,7 @@ const ACCENT = "#2dd4bf";
 // Background is transparent so the teal stage shows through any letterbox.
 function Panel({ label, accent, aspect, children }) {
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
       <div style={{
         fontSize: 11,
         fontWeight: 700,
@@ -25,7 +25,8 @@ function Panel({ label, accent, aspect, children }) {
         borderRadius: 10,
         overflow: "hidden",
         aspectRatio: aspect,
-        maxHeight: "64vh",
+        flex: "0 1 auto",
+        minHeight: 0,
         margin: "0 auto",
         width: "100%",
         display: "flex",
@@ -81,7 +82,7 @@ export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, 
   }
 
   return (
-    <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 16, alignItems: "stretch" }}>
       <Panel label="Original" accent="#818cf8" aspect={aspect}>
         {src
           ? <video

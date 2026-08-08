@@ -240,9 +240,18 @@ export default function ReviewStage({ video, regions, onRegionsChange, onSaveDra
   }
 
   return (
-    <div style={{ flex: 1, padding: "24px 32px", overflowY: "auto", background: "#0d3d37" }}>
+    <div style={{
+      flex: 1,
+      minWidth: 0,
+      minHeight: 0,
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden",
+      padding: "16px 24px 12px",
+      background: "#0d3d37",
+    }}>
       {/* Header: filename + before/after + savings */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
+      <div style={{ flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <HeaderSaveButton
             onSaveDraft={onSaveDraft}
@@ -271,20 +280,34 @@ export default function ReviewStage({ video, regions, onRegionsChange, onSaveDra
         />
       </div>
 
-      {/* Three synced panels — the Original doubles as the scrub viewer */}
-      <SyncedPanels
-        video={video}
-        onTime={onPlaybackTime}
-        videoRef={originalRef}
-        cuts={cuts}
-        keeps={keeps}
-        seekTo={seekTarget}
-        onStop={onPlaybackStop}
-      />
+      {/* Middle band: synced panels + (future) tool rail slot */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", gap: 16 }}>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex" }}>
+          <SyncedPanels
+            video={video}
+            onTime={onPlaybackTime}
+            videoRef={originalRef}
+            cuts={cuts}
+            keeps={keeps}
+            seekTo={seekTarget}
+            onStop={onPlaybackStop}
+          />
+        </div>
+        {/* Prompt 8 seam: right tool rail renders here. Empty on purpose. */}
+        <div style={{ flexShrink: 0, width: 0 }} />
+      </div>
 
       {/* Scrub + edit timeline + frame readout */}
-      <div style={{ marginTop: 24 }}>
-        <div style={{ fontSize: 11, color: "#5eead4aa", letterSpacing: "0.05em", marginBottom: 6 }}>
+      <div style={{ flexShrink: 0, marginTop: 16 }}>
+        <div style={{
+          fontSize: 11,
+          color: "#5eead4aa",
+          letterSpacing: "0.05em",
+          marginBottom: 6,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}>
           click to place the playhead · drag it to scrub · hover to preview · ←/→ step 1 frame · shift+←/→ step 10 · c adds a boundary of the active type there · click a block then delete to remove
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, gap: 16, flexWrap: "wrap" }}>
