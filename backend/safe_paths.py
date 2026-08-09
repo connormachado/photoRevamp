@@ -30,6 +30,7 @@ Logic only — routes live in server.py.
 """
 
 import os
+import re
 from pathlib import Path
 
 from utils import DEFAULT_DB_PATH
@@ -116,4 +117,36 @@ def safe_id_component(value: str) -> str:
         # Never reaches a shell, but a leading dash reads as a flag to any CLI
         # this id is later interpolated into an argument for.
         raise UnsafePathError(f"invalid id: {value!r}")
+    return value
+
+
+_TITLE_DISALLOWED_RE = re.compile(r"[^A-Za-z0-9 _.\-]")
+_RESERVED_TITLE_STEMS = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+MAX_TITLE_LENGTH = 120
+
+
+def sanitize_title_component(raw: str) -> str:
+    """Turn a user-typed video title into a filesystem-safe filename stem, or
+    "" if nothing safe survives (the caller falls back to its own default
+    naming, e.g. the video id).
+
+    Unlike `safe_id_component`, this is a WHITELIST, not a denylist — a title
+    is free text a person typed, not an opaque token, so silently dropping
+    the handful of characters that would break a filename is the right
+    tradeoff. Rejecting the whole title over one stray character (a colon, an
+    emoji) would make the feature unusable.
+    """
+    if not raw or not isinstance(raw, str):
+        return ""
+    value = _TITLE_DISALLOWED_RE.sub("", raw)
+    value = re.sub(r"\s+", " ", value).strip(" .")
+    value = value[:MAX_TITLE_LENGTH].rstrip()
+    # "." / ".." can't survive to here: strip(" .") above already consumes a
+    # string made entirely of dots (and/or spaces) down to "".
+    if not value or value.lower() in _RESERVED_TITLE_STEMS:
+        return ""
     return value

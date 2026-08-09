@@ -40,6 +40,7 @@ DRAFTS_DIR = MOTION_DIR / "drafts"          # in-progress, unapproved edit state
 PREVIEW_DIR = MOTION_DIR / "preview"        # cached browser-playable transcodes
 DECISIONS_LOG = MOTION_DIR / "decisions.jsonl"
 SAVINGS_PATH = MOTION_DIR / "savings.json"  # running pool of reclaimed bytes
+TITLES_PATH = MOTION_DIR / "titles.json"    # user-set display/export titles
 
 VALID_VERDICTS = {"reject", "approve"}
 
@@ -232,6 +233,37 @@ def _clear_draft(video_id: str) -> None:
         pass
 
 
+# ── Title state ───────────────────────────────────────────────────────────────
+# A user-chosen display/export name, independent of source_name (the on-disk
+# upload filename, which never changes). Kept in its own flat ledger rather
+# than patched onto the proposal (written once, never mutated), the review
+# (overwritten by every verdict/export) or the draft (cleared the moment a
+# real export supersedes it) — none of those survive "set once, still there
+# after export," which is exactly the lifetime a title needs.
+
+def _read_titles() -> dict:
+    return _read_json(TITLES_PATH) or {}
+
+
+def get_title(video_id: str) -> str:
+    """The sanitized title for video_id, or "" if none is set."""
+    return _read_titles().get(video_id, "")
+
+
+def set_title(video_id: str, title: str) -> str:
+    """Persist a sanitized display/export title for video_id. An empty title
+    clears it back to the default (source_name) display."""
+    if not _read_json(_proposal_path(video_id)):
+        raise FileNotFoundError(f"no proposal for {video_id}")
+    titles = _read_titles()
+    if title:
+        titles[video_id] = title
+    else:
+        titles.pop(video_id, None)
+    _atomic_write_json(TITLES_PATH, titles)
+    return title
+
+
 # ── Queue ─────────────────────────────────────────────────────────────────────
 
 def _queue_entry(prop_path: Path) -> dict | None:
@@ -293,6 +325,7 @@ def _queue_entry(prop_path: Path) -> dict | None:
         "video_id": video_id,
         "apple_uuid": prop.get("apple_uuid", ""),
         "source_name": os.path.basename(source_path) if source_path else video_id,
+        "title": get_title(video_id),
         "source_exists": source_exists,
         "original_duration": orig_dur,
         "trimmed_duration": trimmed_duration,
@@ -640,6 +673,20 @@ def record_decision(
 
 # ── Export to Photos ──────────────────────────────────────────────────────────
 
+def _unique_export_name(stem: str) -> str:
+    """`<stem>_trimmed.mp4`, disambiguated against whatever's already in
+    EXPORTS_DIR. A title is user-chosen text, so two videos can land on the
+    same stem — the render must not silently clobber the earlier file."""
+    candidate = f"{stem}_trimmed.mp4"
+    if not (export_video.EXPORTS_DIR / candidate).exists():
+        return candidate
+    for n in range(2, 1000):
+        candidate = f"{stem}-{n}_trimmed.mp4"
+        if not (export_video.EXPORTS_DIR / candidate).exists():
+            return candidate
+    return f"{stem}-{uuid4().hex[:8]}_trimmed.mp4"
+
+
 def export_to_photos(
     video_id: str,
     regions: list | None = None,
@@ -689,12 +736,15 @@ def export_to_photos(
         raise ValueError("the cuts cover the whole video — there is nothing to export")
 
     # 1) Render → import → reveal. Nothing is logged until this succeeds.
+    # The user's title (if set) names both the export file and, since Photos
+    # names an imported asset after the file on disk, the Photos asset too.
+    # Falls back to the video id (still validated) when no title is set.
+    stem = get_title(video_id) or safe_paths.safe_id_component(video_id)
     result = export_video.export_and_import(
         source_path, plan,
-        # Validated again even though the proposal read above already did:
-        # out_name is joined onto EXPORTS_DIR inside render_plan, so this is the
-        # one value that decides where ffmpeg writes.
-        out_name=f"{safe_paths.safe_id_component(video_id)}_trimmed.mp4",
+        # out_name is joined onto EXPORTS_DIR inside render_plan, so this is
+        # the one value that decides where ffmpeg writes.
+        out_name=_unique_export_name(stem),
         progress_cb=progress_cb,
     )
 

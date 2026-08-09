@@ -404,6 +404,7 @@ def tmp_motion_db(tmp_path, monkeypatch):
         monkeypatch.setattr(mr, attr, path)
     monkeypatch.setattr(mr, "DECISIONS_LOG", root / "decisions.jsonl")
     monkeypatch.setattr(mr, "SAVINGS_PATH", root / "savings.json")
+    monkeypatch.setattr(mr, "TITLES_PATH", root / "titles.json")
 
     class MotionDB:
         module = mr
@@ -414,6 +415,7 @@ def tmp_motion_db(tmp_path, monkeypatch):
         preview = dirs["PREVIEW_DIR"]
         savings = root / "savings.json"
         decisions = root / "decisions.jsonl"
+        titles = root / "titles.json"
 
         def proposal(self, video_id="vid1", **overrides):
             """Write a minimal valid proposal and return it."""

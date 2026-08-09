@@ -3,6 +3,7 @@ import SyncedPanels from "./SyncedPanels";
 import CutTimeline from "./CutTimeline";
 import BoundaryToolbar from "./BoundaryToolbar";
 import SaveIcon from "./SaveIcon";
+import EditableTitle from "./EditableTitle";
 import CollapsiblePanel from "./CollapsiblePanel";
 import ToolRail, { TOOL_RAIL_WIDTH } from "./ToolRail";
 import { fmtDur, formatBytes } from "./format";
@@ -86,7 +87,7 @@ function HeaderSaveButton({ onSaveDraft, justSaved }) {
 
 export default function ReviewStage({
   video, regions, onRegionsChange, onSaveDraft, draftSaved,
-  onAnalyzeMotion, analyzing, analyzeError,
+  onAnalyzeMotion, analyzing, analyzeError, onRenameTitle,
 }) {
   // The playhead is PLACED, not hovered: it only moves on click, drag, ←/→ or
   // real playback. `preview` is the transient hover position — it moves the
@@ -263,7 +264,7 @@ export default function ReviewStage({
             justSaved={draftSaved}
           />
           <div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: "#e5e5e5" }}>{video.source_name}</div>
+            <EditableTitle video={video} onRename={onRenameTitle} />
             {/* Replaces the old video_id hash — that was internal plumbing (an MD5
                 of the source path) and meant nothing on screen. */}
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, fontSize: 12 }}>

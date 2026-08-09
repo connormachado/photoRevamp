@@ -540,6 +540,24 @@ def motion_review_draft():
     return jsonify(draft)
 
 
+@app.route("/motion-review/title", methods=["POST"])
+def motion_review_title():
+    """Set (or clear, with "") a video's display/export title. Sanitized
+    server-side regardless of what the client already cleaned up — this
+    value becomes an export filename and, since Photos names an imported
+    asset after the file on disk, the Photos asset name too."""
+    data = _json_body()
+    video_id = data.get("video_id", "")
+    if not video_id:
+        return jsonify({"error": "no video_id provided"}), 400
+    sanitized = safe_paths.sanitize_title_component(data.get("title", ""))
+    try:
+        motion_review.set_title(video_id, sanitized)
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify({"video_id": video_id, "title": sanitized})
+
+
 @app.route("/motion-review/analyze", methods=["POST"])
 def motion_review_analyze():
     """Re-run dead-time detection for one video already in the queue — the

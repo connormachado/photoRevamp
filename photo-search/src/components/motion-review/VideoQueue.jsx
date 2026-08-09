@@ -113,7 +113,7 @@ export default function VideoQueue({ videos, selectedVideoId, onSelect, onUpload
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
               <span style={{ color: active ? "#e5e5e5" : "#bbb", fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {v.source_name}
+                {v.title || v.source_name}
               </span>
               <VerdictBadge verdict={v.verdict} />
             </div>

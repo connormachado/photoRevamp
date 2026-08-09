@@ -268,6 +268,27 @@ export default function MotionReviewApp({ onExit }) {
     }
   }, [selectedVideoId, editedRegions]);
 
+  // Rename a video's display/export title (the editable title in the review
+  // header). Folds the server's sanitized echo back onto `videos` — the same
+  // "don't trust the optimistic local value" pattern saveDraft uses for
+  // regions, so a messy typed title visibly becomes the clean stored one.
+  const renameTitle = useCallback(async (videoId, rawTitle) => {
+    try {
+      const res = await fetch(`${API}/motion-review/title`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ video_id: videoId, title: rawTitle }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      setVideos((prev) => prev.map((v) =>
+        v.video_id === videoId ? { ...v, title: data.title } : v
+      ));
+    } catch {
+      /* local-only tool; a failed rename just means try again */
+    }
+  }, []);
+
   // Re-run dead-time detection for the selected video (the "Analyze Motion"
   // tool-rail button). Unlike runExport this is a plain awaited fetch, not a
   // polled background job — a single video's re-run is the same synchronous
@@ -554,6 +575,7 @@ export default function MotionReviewApp({ onExit }) {
                 onAnalyzeMotion={analyzeMotion}
                 analyzing={analyzingVideoId === selectedVideoId}
                 analyzeError={analyzeError}
+                onRenameTitle={renameTitle}
               />
             ) : (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#555", textAlign: "center", padding: 24 }}>
