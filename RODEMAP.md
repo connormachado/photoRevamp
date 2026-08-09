@@ -390,6 +390,24 @@ render pipeline.
   1:39.8→0:16.3) on completion, disabled stubs fire no requests, both rails collapse
   independently with no scroll introduced.
 
+- ✅ **Collapsible "Removed · timelapse" panel** (Aug 2026). `SyncedPanels.jsx`'s
+  three-panel row is now Original / Removed·timelapse (collapsible) / Trimmed result —
+  Trimmed stays permanently visible, Removed collapses. Deliberately did NOT reuse
+  `CollapsiblePanel.jsx`: that component assumes a fixed-pixel sidebar docked at a true
+  screen edge, but each synced panel is a `flex:1` peer sized by the loaded video's
+  `aspectRatio`, with no stable pixel width to hand a dock animation. Collapsing instead
+  unmounts the panel (and its `SegmentVideo`) entirely rather than shrinking it to a
+  strip; a small `<>` button takes its exact flex slot to re-expand, so the two
+  remaining `flex:1` panels reflow to fill the row on their own — same mechanism as
+  removing any flex sibling. The collapsible panel is kept in the visual middle on
+  purpose so collapsing it grows both neighbors evenly. Session-only state, no
+  persistence (matches `CollapsiblePanel`'s existing precedent — no UI-prefs mechanism
+  exists elsewhere in the app). Build/lint clean (10 pre-existing errors, unchanged);
+  frontend-only, no new tests. No screenshot tool was available in-session
+  (no chromium-cli/Playwright), so this was verified through Connor's own live use in
+  the browser across several rounds of feedback (button placement, panel order, then a
+  correction that it was the wrong panel collapsing) rather than an automated check.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

@@ -6,7 +6,9 @@ const ACCENT = "#2dd4bf";
 
 // A labeled, bordered frame shared by all three panels so they read as a set.
 // Background is transparent so the teal stage shows through any letterbox.
-function Panel({ label, accent, aspect, children }) {
+// `onToggleCollapse` (Removed only) adds a small chevron right next to the
+// title, which hides this panel entirely — the caller stops rendering it.
+function Panel({ label, accent, aspect, children, onToggleCollapse }) {
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
       <div style={{
@@ -16,8 +18,29 @@ function Panel({ label, accent, aspect, children }) {
         textTransform: "uppercase",
         color: accent,
         marginBottom: 8,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
       }}>
         {label}
+        {onToggleCollapse && (
+          <button
+            onClick={onToggleCollapse}
+            title={`Collapse ${label}`}
+            aria-label={`Collapse ${label}`}
+            style={{
+              border: "none",
+              background: "none",
+              color: accent,
+              cursor: "pointer",
+              fontSize: 12,
+              padding: 0,
+              lineHeight: 1,
+            }}
+          >
+            ▸
+          </button>
+        )}
       </div>
       <div style={{
         background: "transparent",
@@ -36,6 +59,34 @@ function Panel({ label, accent, aspect, children }) {
         {children}
       </div>
     </div>
+  );
+}
+
+// The re-expand affordance once Removed is fully hidden — sits as its own
+// flex child physically between Original and Trimmed (both flex:1), so it
+// lands at the row's midpoint rather than off at Removed's old spot.
+function ExpandRemovedButton({ onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title="Expand Removed · timelapse"
+      aria-label="Expand Removed · timelapse"
+      style={{
+        alignSelf: "center",
+        flex: "0 0 auto",
+        border: `1px solid ${ACCENT}55`,
+        borderRadius: 8,
+        background: "rgba(45,212,191,0.08)",
+        color: ACCENT,
+        cursor: "pointer",
+        fontSize: 12,
+        fontWeight: 700,
+        padding: "6px 8px",
+        lineHeight: 1,
+      }}
+    >
+      {"<>"}
+    </button>
   );
 }
 
@@ -76,6 +127,10 @@ export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, 
   const probeAspect = video.width && video.height ? video.width / video.height : 16 / 9;
   const [aspect, setAspect] = useState(probeAspect);
 
+  // Session-only, like ToolRail's CollapsiblePanel — no UI-prefs mechanism
+  // exists elsewhere in the app to persist this across reloads.
+  const [removedCollapsed, setRemovedCollapsed] = useState(false);
+
   function onLoadedMetadata(e) {
     const v = e.target;
     if (v.videoWidth && v.videoHeight) setAspect(v.videoWidth / v.videoHeight);
@@ -97,11 +152,20 @@ export default function SyncedPanels({ video, onTime, videoRef, cuts: cutsProp, 
           : <Placeholder text="Source video not available on disk" />}
       </Panel>
 
-      <Panel label="Removed · timelapse" accent="#f87171" aspect={aspect}>
-        {src && cuts.length
-          ? <SegmentVideo src={src} segments={cuts} rate={4} onTime={onTime} seekTo={seekTo} onStop={onStop} />
-          : <Placeholder text={src ? "No sections removed" : "Source unavailable"} />}
-      </Panel>
+      {removedCollapsed ? (
+        <ExpandRemovedButton onClick={() => setRemovedCollapsed(false)} />
+      ) : (
+        <Panel
+          label="Removed · timelapse"
+          accent="#f87171"
+          aspect={aspect}
+          onToggleCollapse={() => setRemovedCollapsed(true)}
+        >
+          {src && cuts.length
+            ? <SegmentVideo src={src} segments={cuts} rate={4} onTime={onTime} seekTo={seekTo} onStop={onStop} />
+            : <Placeholder text={src ? "No sections removed" : "Source unavailable"} />}
+        </Panel>
+      )}
 
       <Panel label="Trimmed result" accent={ACCENT} aspect={aspect}>
         {src && keeps.length
