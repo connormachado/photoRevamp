@@ -29,6 +29,7 @@ import graph_view
 import cleanup
 import motion_review
 import queue_removal
+import storage
 import video_upload
 import embed_job
 import export_job
@@ -482,6 +483,24 @@ def motion_review_remove():
     except FileNotFoundError as e:
         return jsonify({"error": str(e)}), 404
     return jsonify(record)
+
+
+@app.route("/motion-review/storage", methods=["GET"])
+def motion_review_storage():
+    """Disk usage of the app's own working copies under uploads/."""
+    return jsonify(storage.get_usage())
+
+
+@app.route("/motion-review/storage/purge", methods=["POST"])
+def motion_review_storage_purge():
+    """Delete every OWNED working copy queue-wide, keep-savings.
+
+    Reuses queue_removal.remove_from_queue per video — same guarantees as
+    "Remove from queue" (never an original, never a savings retraction) — and
+    skips any video a live export is currently using rather than failing the
+    whole batch.
+    """
+    return jsonify(storage.purge_all_working_copies())
 
 
 @app.route("/motion-review/export", methods=["POST"])

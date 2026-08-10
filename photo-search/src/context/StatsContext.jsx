@@ -88,10 +88,18 @@ export function StatsProvider({ children }) {
   // Same single persistence path as the +/− buttons; always estimated.
   const addToDeleteCount = useCallback((n) => bump(n), [bump]);
 
+  // Photo-only slice of reclaimedBreakdown, excluding climb_cutter — the main
+  // page's DeleteCounter shows this rather than the merged total now that
+  // Climb Cutter has its own reclaimed figure in Settings > Storage; without
+  // this split, video trims (often GB-sized) drown out actual photo savings.
+  const photosReclaimedBytes = (reclaimedBreakdown.photos_exact || 0)
+    + (reclaimedBreakdown.photos_estimated || 0);
+
   return (
     <StatsContext.Provider value={{
       deleted,
       reclaimedBytes,
+      photosReclaimedBytes,
       reclaimedBreakdown,
       avgPhotoBytes,
       incrementDeleteCount,

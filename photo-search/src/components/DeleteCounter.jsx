@@ -4,19 +4,20 @@ import { formatBytes } from "./motion-review/format";
 
 // A floating card in the top-right corner showing how many photos have been
 // culled and how much space that's projected to reclaim. Both are sourced from
-// StatsContext (which persists them to the backend), so manual +/− here, the
-// auto-bump from "Show in Photos", and Climb Cutter's video trims all feed the
-// same two numbers.
+// StatsContext (which persists them to the backend): manual +/− here and the
+// auto-bump from "Show in Photos" both feed the deleted count, and the
+// reclaimed figure is the photos-only slice of the breakdown — Climb Cutter's
+// video-trim savings get their own figure in Settings > Storage instead.
 export default function DeleteCounter() {
-  const { deleted, reclaimedBytes, reclaimedBreakdown, avgPhotoBytes, incrementDeleteCount, decrementDeleteCount } = useStats();
+  const { deleted, photosReclaimedBytes, reclaimedBreakdown, avgPhotoBytes, incrementDeleteCount, decrementDeleteCount } = useStats();
 
-  // Spell out where the total came from, since two of its three parts are
-  // estimates rather than measured bytes.
+  // Photos only — Climb Cutter's reclaimed figure lives in Settings > Storage
+  // now, so it's deliberately left out here (its GB-sized video trims would
+  // otherwise drown out what this page is actually about: photo cleanup).
   const b = reclaimedBreakdown || {};
   const reclaimedDetail = [
     `${formatBytes(b.photos_exact)} — exact photo sizes read from Photos`,
     `${formatBytes(b.photos_estimated)} — estimated, bulk entries at ~${formatBytes(avgPhotoBytes)}/photo`,
-    `${formatBytes(b.climb_cutter)} — Climb Cutter, projected if you delete the originals`,
   ].join("\n");
 
   const btn = {
@@ -64,8 +65,8 @@ export default function DeleteCounter() {
       <div style={{ color: "#666", fontSize: 11, marginTop: 6, textTransform: "uppercase", letterSpacing: 1 }}>
         photos deleted
       </div>
-      {/* One reclaimed total across photo culls and Climb Cutter trims. Hover
-          for the breakdown — most of it is estimated, so don't imply precision. */}
+      {/* Photo culls only — Climb Cutter's figure is in Settings > Storage.
+          Hover for the breakdown — most of it is estimated, not measured. */}
       <div
         title={reclaimedDetail}
         style={{
@@ -79,7 +80,7 @@ export default function DeleteCounter() {
         }}
       >
         <span style={{ color: "#4ade80", fontWeight: 700, fontFamily: "monospace" }}>
-          {formatBytes(reclaimedBytes)}
+          {formatBytes(photosReclaimedBytes)}
         </span>
         <span style={{ textTransform: "uppercase", letterSpacing: 1 }}> reclaimed*</span>
       </div>

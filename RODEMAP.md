@@ -408,6 +408,39 @@ render pipeline.
   the browser across several rounds of feedback (button placement, panel order, then a
   correction that it was the wrong panel collapsing) rather than an automated check.
 
+- ✅ **Storage tab — working-copy usage + guarded bulk purge** (Aug 2026). First real
+  Settings tab (`StorageTab.jsx` replaces its `StubTab`). New `backend/storage.py`:
+  `get_usage()` sums real bytes/count straight off `uploads/` on disk (ground truth,
+  not derived from queue rows — verified to match `du -sh` exactly), and
+  `purge_all_working_copies()` is deliberately *not* new deletion logic — it loops
+  `motion_review.list_queue()` filtered to `owned: true` and calls the existing
+  `queue_removal.remove_from_queue` per video (skipping, not failing, any video
+  `export_job.is_exporting`), so it inherits that function's ownership proof and its
+  `savings.json`-preserving behavior for free. Two routes: `GET /motion-review/storage`,
+  `POST /motion-review/storage/purge`. UI: usage line, a purge button behind a
+  `VerdictButtons`-style confirm popover, and — per a follow-up request — two *separate*
+  reclaimed-bytes lines (Climb Cutter vs. Photos) rather than one merged figure, since a
+  merged total was dominated by GB-sized video trims next to KB/MB-sized photo culls.
+  That split (`photosReclaimedBytes = reclaimedBreakdown.photos_exact +
+  photos_estimated`) was added to `StatsContext` as a single derived value and also
+  swapped into the main-page `DeleteCounter`, which previously showed the same misleading
+  merged total (was reading "1.7 GB", ~94% of which was Climb Cutter, not photos) — it
+  now shows the photos-only slice and its hover tooltip dropped the `climb_cutter` line
+  accordingly. 7 new pytest cases (`tests/test_storage.py`, reusing `tmp_motion_db`); full
+  suite 742 pytest + 206 Vitest green, build clean. Lint went 10→11 pre-existing errors —
+  the one new one is the same `react-hooks/set-state-in-effect` "fetch on mount" pattern
+  `MotionReviewApp.jsx` already trips twice, not a new class of problem. Live-verified
+  against the real server/library: `/motion-review/storage` matched real disk usage
+  (1,105,151,359 bytes / 3 videos against a `du -sh` of 1.0G), and a live discrepancy
+  question (4 videos in queue vs. 3 counted) turned out to be the ownership guard working
+  as designed — the 4th video's source lives outside `uploads/` (a test fixture path),
+  so `owned: false` correctly excludes it from both the usage figure and the purge. The
+  purge button itself was never actually clicked in-session (would have deleted real
+  working copies); confirm/cancel UI was reviewed but not click-tested live — no
+  browser-automation driver was available (no `chromium-cli`/Playwright, and Chrome
+  AppleScript control hung on what looks like an unresolved macOS Automation permission
+  prompt).
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend
