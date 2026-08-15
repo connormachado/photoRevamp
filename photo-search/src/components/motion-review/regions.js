@@ -118,3 +118,12 @@ export function addRegionAt(regions, typeId, t, duration, fps = 30) {
 export function removeRegion(regions, id) {
   return (regions || []).filter((r) => r.id !== id);
 }
+
+// Type-agnostic by construction: the region list is flat and mixes every
+// type together, so dropping everything never has to name a type — it
+// already covers whatever types exist today or get registered later. When
+// an undo stack exists, swap the call site for an undoable command built
+// from the previous list and drop the confirm dialog around it.
+export function clearAllRegions() {
+  return [];
+}

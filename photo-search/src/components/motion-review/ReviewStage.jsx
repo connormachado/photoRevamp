@@ -9,7 +9,7 @@ import ToolRail, { TOOL_RAIL_WIDTH } from "./ToolRail";
 import { fmtDur, formatBytes } from "./format";
 import {
   regionsToCuts, regionsEqual, outputDuration, addRegionAt, removeRegion, regionsFromCuts,
-  buildPlan,
+  buildPlan, clearAllRegions,
 } from "./regions";
 import { DEFAULT_TYPE_ID } from "./boundaryTypes";
 
@@ -209,6 +209,13 @@ export default function ReviewStage({
     setSelectedId(null);
   }, [regions, selectedId, onRegionsChange]);
 
+  // Same mutation path as removeSelected/reset-to-proposed — just handed an
+  // empty list instead of a filtered or proposed one.
+  const clearAll = useCallback(() => {
+    setSelectedId(null);
+    onRegionsChange(clearAllRegions());
+  }, [onRegionsChange]);
+
   // Keyboard: ←/→ step ∓1 frame (shift = ∓10), c adds a boundary at the
   // playhead, delete removes the selected one, escape deselects. Guarded on the
   // event target so typing in a field never triggers an edit.
@@ -305,6 +312,8 @@ export default function ReviewStage({
             analyzing={analyzing}
             analyzeError={analyzeError}
             disabled={!video.source_exists}
+            regionCount={(regions || []).length}
+            onClearAll={clearAll}
           />
         </CollapsiblePanel>
       </div>

@@ -441,6 +441,23 @@ render pipeline.
   AppleScript control hung on what looks like an unresolved macOS Automation permission
   prompt).
 
+- ✅ **Clear all boundaries** (Aug 2026). One control in the right tool rail
+  (`ToolRail.jsx`) drops every edit boundary — any type, current or future — from the
+  selected video at once. `clearAllRegions()` (`regions.js`) is a one-line `() => []`:
+  the region list is flat and never partitioned by type, so wiping it is type-agnostic
+  by construction, stronger than an explicit per-type registry loop. Goes through the
+  same `onRegionsChange` path as removing one boundary or "↺ reset to proposed" — no
+  separate state reset. Confirm-gated (no undo stack exists yet). Per Connor's follow-up,
+  the control stays permanently visible in the rail and just dims (matching the
+  Rotate/Crop/Filters stub styling) at zero boundaries rather than hiding. Clearing
+  writes nothing to disk — like any other unsaved edit, Save Draft is still required
+  afterward to persist it. `ToolButton` gained a `tint` prop (default the rail's teal) so
+  this control can render in red at the same 52×52 chrome as the other four buttons,
+  which are visually unchanged. Live-verified against the real dev server: added 14 real
+  cuts + 1 speed region, cleared, confirmed a clean empty-state render (no crash, no
+  phantom markers), Esc/outside-click cancel leave state untouched, dimmed icon is a
+  no-op. Build/lint clean, 742 pytest + 206 Vitest green.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend
