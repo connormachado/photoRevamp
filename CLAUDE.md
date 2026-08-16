@@ -130,8 +130,10 @@ back up here:
 
 See `RODEMAP.md` for the full list. Current state:
 
-Library is ~49.6k photos indexed. Repo is consolidated on a single `main` branch
-(in sync with `origin/main`), no worktrees, no stashes — one source of truth.
+Library is 56,612 vectors indexed in ChromaDB, all of which carry a Graph View layout
+(`x`/`y`/cluster ids) as of the 2026-08-15 full UMAP refit. Repo is consolidated on a
+single `main` branch (in sync with `origin/main`), no worktrees, no stashes — one
+source of truth.
 
 The shipped-work log with its verification detail lives in `RODEMAP.md`
 under **features → ✅ shipped → verified build log**.
@@ -161,5 +163,7 @@ under **features → ✅ shipped → verified build log**.
    Photos end to end** — the first real `POST /motion-review/export` with a speed
    region is still pending.
 2. Expand Climb Cutter with further features (current build focus).
-3. Graph View polish — refit UMAP on the full library, then Phase 3 cosmetics.
+3. Graph View polish — full-library UMAP refit is done (2026-08-15); Phase 3 cosmetics
+   and the Phase 4/5 zoom + overlap work remain. Overlap is now the most visible gap:
+   tighter concept clusters mean results stack more, not less.
 4. Real video semantic search (wanted soon, larger effort).

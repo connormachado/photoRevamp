@@ -25,7 +25,7 @@ never a manual timeline you have to operate yourself.
 | frontend | React + Vite, port 5173 |
 | device | Apple Silicon Mac (torch device = `mps`) |
 
-Library is ~49.6k photos indexed. Indexing targets the Photos **derivatives** cache
+Library is 56,612 photos indexed. Indexing targets the Photos **derivatives** cache
 so it stays compatible with iCloud "Optimize Storage"; `apple_uuid` is stored in
 ChromaDB metadata so AppleScript operations can find the real asset.
 
@@ -493,14 +493,24 @@ look like, so you can see clusters rather than scroll a list.
 | 5 | local overlap nudge (d3-force at max zoom) | ❌ not started |
 
 **Known issues to fix before polishing anything:**
-- The UMAP reducer was fit on a **2,000-photo sample** and never refit. All ~49.6k photos
-  have coordinates (projected onto that reducer incrementally), but the map's *structure*
-  comes from a 2k subset. This is the most likely reason the layout looks wrong. Refit on
-  the full library first.
+- ✅ **Fixed 2026-08-15 — full-library UMAP refit.** The reducer had been fit on a
+  **2,000-photo sample** (Jul 3) and never refit; ~46k photos were merely projected onto it
+  via `.transform()`, so the map's structure came from a 3.5% subset. Now fit on all 56,612
+  (81 s, 2.3 GB peak, `random_state=42` pinned). Measured on the same photos and queries
+  either way: mean concept-separation ratio 16.2 → 38.8, and "screenshot" results went from
+  smeared across 9 fine clusters (23% in the largest) to 5 (65%). Global geometry improved
+  only modestly by comparison (separation ratio +8.6%, silhouette +2.9%), and the largest
+  fine cluster grew from 4.1% to 5.2% of the library — the win is at the concept level, not
+  in the aggregate statistics. Clustering had to switch to a kNN connectivity graph to run
+  at all; see `backend/CLAUDE.md`. Backups and a coordinate snapshot from before the refit
+  are in `photo_db/` with `LAYOUT_RESTORE_20260815T231454Z.md`.
 - Graph View currently plots only the **top 50 search results**, not the library. Making it
   an actual map is its own piece of work, separate from Phases 4/5.
-- Clustering is Agglomerative at fixed k (broad=12, fine=60). Fixed k on a 2k fit is a
-  guess; worth revisiting once the refit lands.
+- Clustering is Agglomerative (Ward) at fixed k (broad=12, fine=60), now kNN-constrained at
+  `CONNECTIVITY_K=15`. The refit has landed, so revisiting k is live work rather than
+  blocked: both the cluster counts and the connectivity k are unexamined guesses. If fine
+  clusters ever look stringy or chained, raise `CONNECTIVITY_K` — that artifact is a
+  symptom of too sparse a graph, not of a bad layout.
 
 ---
 

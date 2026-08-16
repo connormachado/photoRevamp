@@ -30,6 +30,7 @@ import chromadb
 import joblib
 import umap
 from sklearn.cluster import AgglomerativeClustering
+from sklearn.neighbors import kneighbors_graph
 
 from utils import COLLECTION_NAME, DEFAULT_DB_PATH
 
@@ -44,6 +45,11 @@ CHUNK_SIZE = 5000   # stay well under SQLite's variable limit
 
 BROAD_K = 12        # coarse clusters shown in the map overview
 FINE_K  = 60        # fine clusters used for neighbour browsing
+
+# Neighbours per node in the connectivity graph handed to AgglomerativeClustering.
+# Not a cosmetic knob: it is what keeps clustering off scipy's dense code path.
+# See _cluster_labels() and backend/CLAUDE.md.
+CONNECTIVITY_K = 15
 
 
 # ── ChromaDB helpers ──────────────────────────────────────────────────────────
@@ -137,6 +143,35 @@ def write_back(collection, ids, metadatas, coords, labels_broad, labels_fine):
     print(f"  ✅ Wrote x/y/cluster back for {n:,} photos.")
 
 
+# ── Clustering ────────────────────────────────────────────────────────────────
+
+def _connectivity_graph(coords, n_neighbors: int = CONNECTIVITY_K):
+    """Sparse kNN adjacency over the 2-D layout, used to constrain Ward.
+
+    This is a scaling requirement, not a tuning choice. AgglomerativeClustering
+    with connectivity=None falls through to scipy's hierarchy.ward, which
+    materialises the full condensed distance matrix — N(N-1)/2 float64, i.e.
+    ~11.9 GiB at N=56,612, allocated once per clustering call. Handing it a
+    sparse graph switches sklearn to its structured ward tree, which is O(N·k).
+
+    Returns None when the collection is too small to build a graph; callers
+    treat that as "cluster unconstrained", which is safe at that size.
+    """
+    k = min(n_neighbors, len(coords) - 1)
+    if k < 1:
+        return None
+    return kneighbors_graph(coords, n_neighbors=k, include_self=False)
+
+
+def _cluster_labels(coords, k: int, connectivity):
+    """Ward labels at fixed k. Always pass `connectivity` from _connectivity_graph."""
+    return (
+        AgglomerativeClustering(n_clusters=k, connectivity=connectivity)
+        .fit_predict(coords)
+        .astype(np.int32)
+    )
+
+
 # ── Cluster summary helpers ───────────────────────────────────────────────────
 
 def _build_cluster_summary(ids, metadatas, coords, labels):
@@ -197,10 +232,18 @@ def full_fit(collection, broad_k: int, fine_k: int, limit=None):
     if N == 1:
         labels_broad = np.array([0], dtype=np.int32)
         labels_fine  = np.array([0], dtype=np.int32)
+        conn_k = 0
     else:
-        print(f"  Clustering: broad_k={bk}, fine_k={fk} …")
-        labels_broad = AgglomerativeClustering(n_clusters=bk).fit_predict(coords).astype(np.int32)
-        labels_fine  = AgglomerativeClustering(n_clusters=fk).fit_predict(coords).astype(np.int32)
+        # conn_k is the value handed to the graph, not a parallel recomputation of
+        # it — layout_meta.json's connectivity_k is the audit trail for the dense-ward
+        # guard, so it must describe the graph actually used, not what we intended.
+        conn_k = min(CONNECTIVITY_K, N - 1)
+        connectivity = _connectivity_graph(coords, conn_k)
+        if connectivity is None:
+            conn_k = 0
+        print(f"  Clustering: broad_k={bk}, fine_k={fk}, connectivity_k={conn_k} …")
+        labels_broad = _cluster_labels(coords, bk, connectivity)
+        labels_fine  = _cluster_labels(coords, fk, connectivity)
 
     print(f"  Clustering done.")
 
@@ -220,6 +263,7 @@ def full_fit(collection, broad_k: int, fine_k: int, limit=None):
         "umap_params":    {"n_components": 2, "random_state": 42},
         "broad_k":        bk,
         "fine_k":         fk,
+        "connectivity_k": conn_k,
     }
     LAYOUT_META_PATH.write_text(json.dumps(layout_meta, indent=2))
     print(f"  Saved layout meta → {LAYOUT_META_PATH}")
