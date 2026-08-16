@@ -22,6 +22,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import config_store
 from utils import DEFAULT_DB_PATH
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -29,9 +30,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 # The derivatives cache is the only tree that matches embed_photos.py's file
 # filter (*_5005_c.jpeg), and it's what every path currently in ChromaDB points
 # at. Scanning it takes well under a second.
-PHOTOS_ROOT = (
-    Path.home() / "Pictures" / "Photos Library.photoslibrary" / "resources" / "derivatives"
-)
+PHOTOS_ROOT = config_store.get_library_root() / "resources" / "derivatives"
 
 STATUS_PATH = DEFAULT_DB_PATH / "embed_status.json"
 LOG_PATH = DEFAULT_DB_PATH / "embed_log.txt"

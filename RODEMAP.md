@@ -458,6 +458,28 @@ render pipeline.
   phantom markers), Esc/outside-click cancel leave state untouched, dimmed icon is a
   no-op. Build/lint clean, 742 pytest + 206 Vitest green.
 
+- ✅ **Shared config store + Photos Library settings tab** (Aug 2026). New
+  `backend/config_store.py` — the one general, persisted key/value settings store
+  (`photo_db/config.json`, schema-versioned), built as the foundation for two follow-on
+  prompts rather than shaped around one setting. Seeded with `library_root`;
+  `safe_paths.ALLOWED_ROOTS`, `embed_job.PHOTOS_ROOT`, and
+  `video_motion.DEFAULT_PHOTOS_LIBRARY`/`ORIGINALS_ROOT` — three independently
+  hardcoded copies of the same Photos-library path — now all resolve through it, one
+  source of truth. Second real Settings tab (`PhotosLibraryTab.jsx` replaces its
+  `StubTab`, joining `StorageTab`): read-only root display + a Validate button checking
+  for `resources/derivatives` + `originals`, no editable field or file picker by design.
+  Two new routes, `GET/POST /settings/photos-library[/validate]`. `/write-tests` on the
+  new module (87 tests) surfaced two real bugs against its own "never raises" contract —
+  a non-UTF-8 config file and a non-string/empty `library_root` could each crash or
+  misdirect the app at import time — both fixed rather than left as documented xfails
+  (see `backend/CLAUDE.md`). Full suite 915 pytest + 206 Vitest green (was 828), build/
+  lint clean (one more `react-hooks/set-state-in-effect` instance, same pre-existing
+  pattern as `StorageTab.jsx`). Live-verified: pointed the config at a bogus path and
+  confirmed all three consumers followed it (not the hardcoded literal) in a fresh
+  process, `validate` correctly distinguished the real library from the bogus one, and
+  deleting `config.json` entirely still imported cleanly with no file recreated by a
+  bare read.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

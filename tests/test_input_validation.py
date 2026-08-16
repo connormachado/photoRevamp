@@ -241,12 +241,14 @@ class TestNoRouteReturnsFiveHundred:
 
     GET_ROUTES = ["/stats", "/motion-review/queue", "/motion-review/savings",
                   "/motion-review/export/status",
-                  "/api/embed/status", "/filters/dismissed"]
+                  "/api/embed/status", "/filters/dismissed",
+                  "/settings/photos-library"]
     POST_ROUTES = ["/stats/increment", "/search/text", "/search/image",
                    "/motion-review/decision", "/motion-review/draft",
                    "/motion-review/export", "/motion-review/remove",
                    "/motion-review/analyze",
-                   "/filters/dismiss", "/filters/restore"]
+                   "/filters/dismiss", "/filters/restore",
+                   "/settings/photos-library/validate"]
 
     JUNK_BODIES = [
         {}, {"unexpected": "field"}, {"video_id": None}, {"query": None},

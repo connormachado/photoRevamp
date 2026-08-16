@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 import imageio_ffmpeg
 
+import config_store
 import ffconcat
 from utils import file_id, DEFAULT_DB_PATH
 
@@ -47,7 +48,7 @@ CONFIG_PATH = MOTION_DIR / "config.json"
 
 FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 
-DEFAULT_PHOTOS_LIBRARY = Path.home() / "Pictures" / "Photos Library.photoslibrary"
+DEFAULT_PHOTOS_LIBRARY = config_store.get_library_root()
 ORIGINALS_ROOT = DEFAULT_PHOTOS_LIBRARY / "originals"
 
 # ── Config ────────────────────────────────────────────────────────────────────

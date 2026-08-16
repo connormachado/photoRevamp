@@ -159,9 +159,10 @@ under **features → ✅ shipped → verified build log**.
   Cause unconfirmed; the split activate-then-spotlight `osascript` calls are a suspect.
 - ⚠️ `npm run lint` reports 11 errors (`react-hooks/set-state-in-effect`,
   `react-refresh/only-export-components`). The build is unaffected.
-- ⚠️ Settings modal (`photo-search/src/components/settings/`) is UI shell only — six of
+- ⚠️ Settings modal (`photo-search/src/components/settings/`) is UI shell only — five of
   seven tabs are still `StubTab` placeholders. `StorageTab` (working-copy usage +
-  guarded bulk purge) is the first real one.
+  guarded bulk purge) and `PhotosLibraryTab` (read-only root + Validate button, backed
+  by `backend/config_store.py`) are the two real ones.
 
 **Immediate next:**
 1. Speed boundaries are render-verified and preview-verified but **not yet exported to

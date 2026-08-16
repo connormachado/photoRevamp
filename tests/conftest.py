@@ -83,6 +83,23 @@ def isolate_dismissed(tmp_path, monkeypatch):
     dismissed.reload()
 
 
+@pytest.fixture(autouse=True)
+def isolate_config_store(tmp_path, monkeypatch):
+    """Point `config_store.CONFIG_PATH` at tmp_path for EVERY test, no opt-in.
+
+    Same rationale as `isolate_stats`/`isolate_dismissed`: without this, a
+    test calling `config_store.set(...)` would write into the real repo's
+    `photo_db/config.json`. This fixture's protection window starts after
+    collection, which is fine only because `config_store.load()`/`get()`
+    never write — see config_store.py's module docstring.
+    """
+    import config_store
+
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(config_store, "CONFIG_PATH", path)
+    return path
+
+
 @pytest.fixture
 def seeded_stats(isolate_stats):
     """Write a stats.json with known contents and return its path.

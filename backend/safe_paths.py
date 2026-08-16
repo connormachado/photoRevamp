@@ -33,6 +33,7 @@ import os
 import re
 from pathlib import Path
 
+import config_store
 from utils import DEFAULT_DB_PATH
 
 
@@ -53,7 +54,7 @@ def _default_roots() -> list[Path]:
         return [Path(p).expanduser() for p in override.split(os.pathsep) if p]
     return [
         # Indexed photos are derivatives inside the Photos library bundle.
-        Path.home() / "Pictures" / "Photos Library.photoslibrary",
+        config_store.get_library_root(),
         # Uploads, proposals, preview proxies and exports.
         Path(DEFAULT_DB_PATH),
     ]

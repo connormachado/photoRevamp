@@ -27,6 +27,7 @@ import chromadb
 import search
 import graph_view
 import cleanup
+import config_store
 import motion_review
 import queue_removal
 import storage
@@ -387,6 +388,23 @@ def cleanup_missing():
     return jsonify(result)
 
 
+# ── Settings ───────────────────────────────────────────────────────────────────
+
+@app.route("/settings/photos-library", methods=["GET"])
+def settings_photos_library():
+    """The resolved Photos library root this process is using — read-only,
+    there is no field to edit here. See config_store.py for the manual-edit
+    + restart escape hatch."""
+    return jsonify({"library_root": str(config_store.get_library_root())})
+
+
+@app.route("/settings/photos-library/validate", methods=["POST"])
+def settings_photos_library_validate():
+    """Check the current resolved root for the resources/derivatives +
+    originals structure this app expects."""
+    return jsonify(config_store.validate_library_root())
+
+
 # ── Climb Cutter: motion review room (Phase 2) ───────────────────────────────
 
 @app.route("/motion-review/queue")
@@ -628,6 +646,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=5001)
     args = parser.parse_args()
 
+    config_store.ensure_seeded()
     load_everything(args.db)
 
     # Prune entries for photos deleted off disk so they stop polluting search.
