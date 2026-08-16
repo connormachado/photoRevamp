@@ -45,12 +45,20 @@ def load_model():
 # ── EXIF helpers ──────────────────────────────────────────────────────────────
 
 def extract_metadata(path: Path) -> dict:
-    """Pull date, GPS, and basic info from EXIF where available."""
+    """Pull GPS and basic info from EXIF where available.
+
+    Does NOT set date_taken. The derivatives this app indexes have their EXIF
+    date stripped almost universally (a handful of legacy rows aside), so a
+    DateTimeOriginal-based value here was never reliable — and worse, it wrote
+    a different type (an EXIF string) than photo_dates.py's Photos.sqlite join
+    (a Unix int), which is the field's other writer. date_taken is now written
+    exactly one way, by callers joining against photo_dates.py: embed_photos.py
+    at index time, backfill_dates.py for rows indexed before that existed.
+    """
     meta = {
         "filename": path.name,
         "path": str(path.resolve()),
         "size_kb": round(path.stat().st_size / 1024, 1),
-        "date_taken": "",
         "lat": "",
         "lon": "",
     }
@@ -63,8 +71,6 @@ def extract_metadata(path: Path) -> dict:
         if exif_data:
             for tag_id, value in exif_data.items():
                 tag = TAGS.get(tag_id, tag_id)
-                if tag == "DateTimeOriginal":
-                    meta["date_taken"] = str(value)
                 if tag == "GPSInfo" and isinstance(value, dict):
                     # Decode GPS if present
                     def to_deg(v):

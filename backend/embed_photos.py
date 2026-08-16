@@ -31,11 +31,27 @@ register_heif_opener()
 # Shared helpers now live in the backend package.
 from utils import load_model, extract_metadata, file_id, COLLECTION_NAME, DEFAULT_DB_PATH
 from search import embed_text
+import photo_dates
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp", ".tiff"}
 BATCH_SIZE = 64           # images per GPU/CPU batch — tune down if you OOM
+
+
+def _attach_resolved_dates(metadatas: list[dict], uuid_dates: dict) -> None:
+    """Set date_taken (int, Unix seconds UTC) on each metadata dict from the
+    Photos.sqlite join, mutating in place.
+
+    extract_metadata() no longer writes a date_taken placeholder, so "no key"
+    is exactly "no date found" — never "not looked up yet". A photo that
+    misses here (no matching asset, or a matched asset with no date) picks up
+    its date on the next backfill_dates.py run instead.
+    """
+    for meta in metadatas:
+        computed = photo_dates.resolve_date(meta.get("apple_uuid", ""), uuid_dates)
+        if computed is not None:
+            meta["date_taken"] = computed
 
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
@@ -105,6 +121,11 @@ def index_photos(photos_dir: str, db_path: str, progress_cb=None):
         print("Nothing new to index — DB is up to date.")
         return collection
 
+    # Loaded once for the whole run, not per photo — a fresh dict-build per
+    # photo would make indexing quadratic in library size for no reason, since
+    # a single connection lookup already covers every uuid this run will see.
+    uuid_dates = photo_dates.load_uuid_dates(photo_dates.photos_sqlite_path())
+
     model, preprocess, _, device = load_model()
 
     # Process in batches
@@ -115,6 +136,7 @@ def index_photos(photos_dir: str, db_path: str, progress_cb=None):
         if embeddings:
             ids = [file_id(p) for p in valid_paths]
             metadatas = [extract_metadata(p) for p in valid_paths]
+            _attach_resolved_dates(metadatas, uuid_dates)
 
             collection.upsert(
                 ids=ids,

@@ -53,7 +53,7 @@ def graph_view(query: str, n, collection, model, tokenizer, device) -> dict:
     {
         "query":    str,
         "count":    int,
-        "photos":   [ { id, apple_uuid, path, thumbnail_url, score,
+        "photos":   [ { id, apple_uuid, path, thumbnail_url, score, date_taken,
                         x, y, cluster_id_broad, cluster_id_fine }, ... ],
         "clusters": [ { cluster_id, representative_id, representative_path,
                         representative_thumbnail_url, size }, ... ]
@@ -102,6 +102,7 @@ def graph_view(query: str, n, collection, model, tokenizer, device) -> dict:
             "path":             meta.get("path", ""),
             "thumbnail_url":    _thumb_url(meta.get("path", "")),
             "score":            round(1 - dist, 4),
+            "date_taken":       meta.get("date_taken") or None,
             "x":                x,
             "y":                y,
             "cluster_id_broad": broad,

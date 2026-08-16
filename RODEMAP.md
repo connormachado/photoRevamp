@@ -480,6 +480,33 @@ render pipeline.
   deleting `config.json` entirely still imported cleanly with no file recreated by a
   bare read.
 
+- ✅ **Date backfill: `date_taken` from Apple's Photos.sqlite** (Aug 2026). Groundwork
+  for the planned "Time tide" temporal search/filter feature, which needs a real
+  per-photo date to range-query over. New `backend/photo_dates.py` joins ChromaDB's
+  `apple_uuid` against
+  `ZASSET.ZUUID`/`ZDATECREATED` (read-only, immutable) and converts Core Data's epoch
+  (seconds since 2001, not 1970) to a Unix int — the one canonical `date_taken` shape,
+  now written by exactly two callers: `embed_photos.py` at index time and
+  `backend/backfill_dates.py`, a rerunnable/idempotent catch-up script for the 56,606
+  rows indexed before this existed (mirrors `backfill_uuids.py`'s chunked-update
+  shape). `utils.extract_metadata()` no longer writes `date_taken` at all — it used to
+  write an EXIF string that only ever populated 6 rows and type-diverged from
+  everything else. `graph_view.py`'s payload now carries the field. `/write-tests`
+  surfaced two real bugs, both fixed rather than left `xfail` (unlike the config-store
+  entry above, which left its two bugs live for a review pass — Connor's call this
+  time was fix-in-place, since one was exactly the "silently wrong" class this
+  migration exists to prevent): an unescaped sqlite URI (`Path.as_uri()` now, not an
+  f-string) and a falsy `apple_uuid` that could theoretically inherit an unrelated
+  asset's date from a stray empty-string `ZUUID`. See `backend/CLAUDE.md` for both.
+  Full suite 1001 pytest + 206 Vitest green. Live-verified, not just tested: backfilled
+  all 56,612 then-indexed rows (0 misses), spot-checked 5 random photos against
+  Photos.app's own `date of media item id` via AppleScript (exact match to the
+  second), confirmed idempotent on a second `--write` run, then ran a real
+  `embed_photos.py` pass that picked up 161 previously-unindexed photos — all 161
+  landed with a correctly-typed date at index time with zero misses, and a follow-up
+  `backfill_dates.py --write` against the grown 56,773-row library reported 0 written
+  / 0 misses, confirming the indexer and the backfill agree.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend

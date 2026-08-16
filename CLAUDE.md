@@ -135,10 +135,12 @@ back up here:
 
 See `RODEMAP.md` for the full list. Current state:
 
-Library is 56,612 vectors indexed in ChromaDB, all of which carry a Graph View layout
-(`x`/`y`/cluster ids) as of the 2026-08-15 full UMAP refit. Repo is consolidated on a
-single `main` branch (in sync with `origin/main`), no worktrees, no stashes — one
-source of truth.
+Library is 56,773 vectors indexed in ChromaDB. 56,612 carry a Graph View layout
+(`x`/`y`/cluster ids) from the 2026-08-15 full UMAP refit; 161 indexed since then
+(2026-08-16) have no layout yet — pending the next `compute_layout.py` incremental
+run. Every row now carries `date_taken` (int, Unix seconds UTC) — see RODEMAP.md's
+date-backfill entry. Repo is consolidated on a single `main` branch (in sync with
+`origin/main`), no worktrees, no stashes — one source of truth.
 
 The shipped-work log with its verification detail lives in `RODEMAP.md`
 under **features → ✅ shipped → verified build log**.
@@ -157,8 +159,12 @@ under **features → ✅ shipped → verified build log**.
   (`photo_db/motion_review/decisions.jsonl` + per-video `reviews/`).
 - ⚠️ "Show in Photos" intermittently activates Photos.app without landing on the exact photo.
   Cause unconfirmed; the split activate-then-spotlight `osascript` calls are a suspect.
-- ⚠️ `npm run lint` reports 11 errors (`react-hooks/set-state-in-effect`,
-  `react-refresh/only-export-components`). The build is unaffected.
+- ⚠️ `npm run lint` has pre-existing errors (`react-hooks/set-state-in-effect`,
+  `react-refresh/only-export-components`, `no-unused-vars`, a few React-Compiler
+  "accessed before declared" warnings) that creep by roughly one per new settings
+  tab. Don't gate on the exact count — it will keep drifting and a check that
+  cries wolf gets ignored. A **new error category** appearing is the thing worth
+  flagging; the build is unaffected either way.
 - ⚠️ Settings modal (`photo-search/src/components/settings/`) is UI shell only — five of
   seven tabs are still `StubTab` placeholders. `StorageTab` (working-copy usage +
   guarded bulk purge) and `PhotosLibraryTab` (read-only root + Validate button, backed

@@ -31,6 +31,12 @@ const COUNT_OPTIONS = [
   { label: "All", value: 200 },
 ];
 
+// date_taken is a Unix timestamp (seconds, UTC) from the Photos.sqlite backfill.
+function formatDateTaken(unixSeconds, withTime = false) {
+  const d = new Date(unixSeconds * 1000);
+  return withTime ? d.toLocaleString() : d.toLocaleDateString();
+}
+
 function PhotoCard({ photo, onClick }) {
   const [loaded, setLoaded] = useState(false);
   const score = Math.round(photo.score * 100);
@@ -86,7 +92,7 @@ function PhotoCard({ photo, onClick }) {
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
           <span style={{ color: "#ccc", fontSize: 11, fontFamily: "monospace" }}>
-            {photo.date_taken ? photo.date_taken.slice(0, 10).replace(/:/g, "-") : "no date"}
+            {photo.date_taken ? formatDateTaken(photo.date_taken) : "no date"}
           </span>
           <span style={{
             background: score > 75 ? "#22c55e" : score > 55 ? "#eab308" : "#6b7280",
@@ -143,7 +149,7 @@ function Modal({ photo, onClose, onSearchSimilar, onHide }) {
           {photo.date_taken && (
             <div>
               <div style={{ color: "#666", fontSize: 11, textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 }}>Date Taken</div>
-              <div style={{ color: "#e5e5e5", fontSize: 13 }}>{photo.date_taken}</div>
+              <div style={{ color: "#e5e5e5", fontSize: 13 }}>{formatDateTaken(photo.date_taken, true)}</div>
             </div>
           )}
           {photo.lat && (
