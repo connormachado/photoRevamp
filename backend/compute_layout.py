@@ -74,7 +74,16 @@ def read_all(collection, limit=None):
     metadatas  : list[dict]
 
     If `limit` is set, stops after collecting that many records.
+
+    Raises ValueError on a non-positive `limit`, and RuntimeError if the three
+    outputs ever come back different lengths — see the invariant check below.
     """
+    if limit is not None and limit <= 0:
+        raise ValueError(
+            f"limit must be a positive number of photos, got {limit!r}. "
+            "Omit it entirely to read the whole collection."
+        )
+
     all_ids        = []
     all_embeddings = []
     all_metadatas  = []
@@ -97,21 +106,54 @@ def read_all(collection, limit=None):
         if not batch["ids"]:
             break
 
-        all_ids.extend(batch["ids"])
-        all_metadatas.extend(batch["metadatas"])
-
-        # ChromaDB 1.5.x may return embeddings as ndarray or list — normalise both
+        # ChromaDB 1.5.x may return embeddings as ndarray or list — normalise both.
+        # This check MUST stay ABOVE the extends: the three lists only ever grow
+        # together. Appending a page's ids and metadatas before confirming it
+        # carried embeddings meant a later empty-embeddings page returned more ids
+        # than coordinate rows; full_fit then clustered the short coords array and
+        # IndexErrored inside write_back — which commits in chunks, so the crash
+        # landed with part of the library already rewritten.
         embs = batch["embeddings"]
         if len(embs) == 0:
             break
+
+        all_ids.extend(batch["ids"])
+        all_metadatas.extend(batch["metadatas"])
         all_embeddings.append(np.asarray(embs, dtype=np.float32))
 
         offset += len(batch["ids"])
 
-    if not all_embeddings:
-        return [], np.empty((0, 0), dtype=np.float32), []
+    X = (np.concatenate(all_embeddings, axis=0) if all_embeddings
+         else np.empty((0, 0), dtype=np.float32))
 
-    return all_ids, np.concatenate(all_embeddings, axis=0), all_metadatas
+    # Terminal invariant. A desynced triple is unrecoverable — every caller pairs
+    # ids[i] with coords[i] — so raise rather than return it. A loud failure here
+    # beats a quiet one partway through write_back's chunked rewrite.
+    if not (len(all_ids) == X.shape[0] == len(all_metadatas)):
+        raise RuntimeError(
+            f"read_all produced a desynced triple: {len(all_ids):,} ids, "
+            f"{X.shape[0]:,} embedding rows, {len(all_metadatas):,} metadatas. "
+            "Refusing to continue — photos would be paired with other photos' "
+            "coordinates."
+        )
+
+    # The other half of the same failure mode: a `break` with pages still to come
+    # reads a SUBSET and says nothing, so a refit would silently lay out part of
+    # the library. This is the manual check that turned up the 8,308 photos with
+    # no coordinates; it warns rather than raises, because a partial read is still
+    # a usable one and the operator may have a reason for it.
+    if limit is None:
+        total = collection.count()
+        if len(all_ids) != total:
+            print(
+                f"\n⚠  WARNING: read {len(all_ids):,} of {total:,} photos in the"
+                f" collection — {total - len(all_ids):,} not read."
+                f"\n   Anything computed from this read covers a SUBSET of the"
+                f" library."
+                f"\n   Investigate before trusting a layout written from it.\n"
+            )
+
+    return all_ids, X, all_metadatas
 
 
 # ── Write-back helper ─────────────────────────────────────────────────────────
@@ -381,7 +423,7 @@ def main():
         "--limit",
         type=int,
         default=None,
-        help="Cap the number of photos processed (useful for quick tests).",
+        help="Cap the number of photos processed (useful for quick tests). Must be > 0.",
     )
     args = parser.parse_args()
 

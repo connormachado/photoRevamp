@@ -325,10 +325,11 @@ class TestReadAll:
         assert len(ids) == X.shape[0] == 5
 
     @pytest.mark.parametrize("limit", [0, -1])
-    def test_a_non_positive_limit_reads_nothing(self, limit):
-        ids, X, metas = cl.read_all(make_collection(5), limit=limit)
-        assert (ids, metas) == ([], [])
-        assert X.shape[0] == 0
+    def test_a_non_positive_limit_is_rejected(self, limit):
+        """`--limit 0` reading nothing was a footgun — a whole-library refit that
+        quietly did nothing looks identical to one that worked. It raises now."""
+        with pytest.raises(ValueError, match="positive"):
+            cl.read_all(make_collection(5), limit=limit)
 
     def test_list_shaped_embeddings_are_normalised_to_a_float32_matrix(self):
         """ChromaDB 1.5.x may hand back lists instead of an ndarray."""
@@ -365,22 +366,19 @@ class TestReadAll:
         assert (ids, metas) == ([], [])
         assert X.shape[0] == 0
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="read_all appends a page's ids+metadatas BEFORE checking that the "
-               "page carried embeddings, so if a LATER page comes back with ids "
-               "but no embeddings it returns more ids than coordinate rows "
-               "(verified: 4 ids, X.shape (2, 4), 4 metadatas). Downstream, "
-               "full_fit clusters the short coords array and then IndexErrors in "
-               "write_back — which chunks its updates, so the crash lands with "
-               "part of the library already rewritten. The first page having no "
-               "embeddings is handled (empty result); only the later-page case "
-               "desyncs. read_all's three outputs should always be the same "
-               "length, or it should stop before extending ids.",
-    )
     def test_ids_embeddings_and_metadatas_stay_aligned_when_a_later_page_has_none(
         self, monkeypatch
     ):
+        """This was a real defect, marked xfail(strict) rather than fixed.
+
+        read_all used to extend ids+metadatas BEFORE checking that the page
+        carried embeddings, so a later empty-embeddings page returned more ids
+        than coordinate rows (4 ids against X.shape (2, 4)). full_fit then
+        clustered the short coords array and IndexErrored inside write_back —
+        which commits in chunks, so the crash landed with part of the library
+        already rewritten. The check moved above the extends; the three outputs
+        now grow together or not at all.
+        """
         monkeypatch.setattr(cl, "CHUNK_SIZE", 2)
 
         class TruncatedEmbeddingCollection(LayoutCollection):
@@ -404,6 +402,67 @@ class TestReadAll:
         ids, X, metas = cl.read_all(coll)
 
         assert len(ids) == X.shape[0] == len(metas)
+        # And it stops at the last good page rather than skipping the bad one —
+        # the conservative `break` is deliberate, so pin it.
+        assert ids == ["p0", "p1"]
+
+    def test_a_desynced_page_raises_instead_of_returning_a_mismatched_triple(self):
+        """The terminal invariant: read_all must never HAND OUT a bad pairing.
+
+        Every caller does `ids[i] <-> coords[i]`, so there is no safe way to
+        consume a triple whose parts differ in length. Raising here is loud and
+        happens before any write; returning it would surface as an IndexError
+        partway through write_back's chunked rewrite of the live library.
+        """
+        class ShortEmbeddingPageCollection(LayoutCollection):
+            """One page: 4 ids and metadatas, but only 3 embedding rows."""
+
+            def get(self, **kwargs):
+                batch = super().get(**kwargs)
+                if len(batch.get("embeddings", [])) > 3:
+                    batch["embeddings"] = batch["embeddings"][:3]
+                return batch
+
+        coll = ShortEmbeddingPageCollection()
+        for i in range(4):
+            coll.add_photo(f"p{i}", [float(i), 0.0, 0.0, 0.0], path=f"/lib/{i}.jpg")
+
+        with pytest.raises(RuntimeError, match="desynced"):
+            cl.read_all(coll)
+
+    def test_reading_fewer_photos_than_the_collection_holds_warns_loudly(self, capsys):
+        """Truncation is the silent half of the same bug — the invariant check
+        stays happy while the layout covers a subset. Compare against the live
+        count and say so; this is the manual check that found 8,308 photos with
+        no coordinates, baked in so nobody has to think to run it."""
+        class StopsEarlyCollection(LayoutCollection):
+            def get(self, **kwargs):
+                batch = super().get(**kwargs)
+                batch["embeddings"] = []
+                return batch
+
+        coll = StopsEarlyCollection()
+        for i in range(7):
+            coll.add_photo(f"p{i}", [float(i), 0.0, 0.0, 0.0], path=f"/lib/{i}.jpg")
+
+        ids, _, _ = cl.read_all(coll)
+        out = capsys.readouterr().out
+
+        assert ids == []
+        assert "WARNING" in out
+        assert "0 of 7" in out          # both numbers, not just a vague grumble
+        assert "SUBSET" in out
+
+    def test_a_complete_read_stays_quiet(self, capsys):
+        """The coverage warning has to be silent on the happy path or it is noise."""
+        cl.read_all(make_collection(5))
+        assert "WARNING" not in capsys.readouterr().out
+
+    def test_the_coverage_warning_does_not_fire_for_a_deliberate_limit(self, capsys):
+        """`--limit` reads a subset ON PURPOSE — warning there would train the
+        operator to ignore the warning that matters."""
+        cl.read_all(make_collection(20), limit=5)
+        assert "WARNING" not in capsys.readouterr().out
 
 
 # ── write_back ────────────────────────────────────────────────────────────────

@@ -70,8 +70,13 @@ and `stats.STATS_PATH` is autouse-redirected to tmp so no test can clobber the l
 delete counter. Reuse the boundary fixtures (`fake_run`, `ffmpeg_stderr`, `fake_chroma`,
 `tmp_motion_db`, `client`) instead of rolling new mocks. `/write-tests <path>` generates
 a suite via the `test-author` subagent. Coverage is pure logic + the route surface only —
-**not** the ffmpeg render path, which is still verified by running it. Four tests are
-`xfail(strict)` on purpose; they mark open decisions, so don't "fix" them into passing.
+**not** the ffmpeg render path, which is still verified by running it. **Three
+`xfail(strict)` markers, 4 instances — and they are not all the same thing.** ONE is an
+open design question (`test_edit_boundaries.py`, unknown region type drops footage);
+TWO are known DEFECTS in `_safe_name` (`test_video_upload.py`) that were marked rather
+than fixed and ARE fixable. **Read the reason string before touching any** — it says
+which kind it is and what the correct behaviour would be. `strict=True` means the suite
+goes RED the moment one starts passing, so a fix and its marker have to land together.
 
 ## API surface
 
