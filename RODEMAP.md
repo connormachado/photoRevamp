@@ -25,9 +25,41 @@ never a manual timeline you have to operate yourself.
 | frontend | React + Vite, port 5173 |
 | device | Apple Silicon Mac (torch device = `mps`) |
 
-Library is 56,612 photos indexed. Indexing targets the Photos **derivatives** cache
-so it stays compatible with iCloud "Optimize Storage"; `apple_uuid` is stored in
-ChromaDB metadata so AppleScript operations can find the real asset.
+Library is 56,773 photos indexed (as of 2026-08-22; 56,612 of them carry Graph View
+layout coords). Indexing targets the Photos **derivatives** cache so it stays compatible
+with iCloud "Optimize Storage"; `apple_uuid` is stored in ChromaDB metadata so AppleScript
+operations can find the real asset.
+
+---
+
+## ❓ known gaps — verified absent as of 2026-08-22
+
+This inventory used to live in `CLAUDE.md`, which auto-loads into every session. It moved
+here because a list of things that *don't* exist rots silently the moment one gets built,
+and a stale line in an auto-loaded file is trusted without being checked. **Re-verify before
+relying on any entry — a grep is faster than trusting this table.**
+
+| gap | verified how |
+|---|---|
+| Graph View Phase 4 (zoom / LOD) and Phase 5 (overlap nudge) — not started | `GraphView.jsx` is a fixed 920×600 canvas, no zoom/pan/collision pass; no `d3` in `package.json` |
+| Graph View shows only the top 50 search results at their UMAP coords — not a whole-library map | `GraphView.jsx` fetches `…/api/graph-view?…&n=50` |
+| Duplicate finder — never built | `backend/duplicates.py`, `DuplicateReview.jsx` absent |
+| **Face / event / timeline** clustering — never built | `backend/clustering.py` absent. Not to be confused with the UMAP layout clustering in `compute_layout.py`, which **does** exist (Agglomerative/Ward — see `backend/CLAUDE.md`) |
+| Real video semantic understanding — never built | `embed_photos.py` contains no video handling at all; videos are indexed only as their static derivative stills |
+| `motion_stats.py` aggregator — never built | absent; decision *logging* does exist (`photo_db/motion_review/decisions.jsonl` + per-video `reviews/`) |
+| Settings modal is mostly shell — 5 of 7 tabs are `StubTab` | real ones are `StorageTab` and `PhotosLibraryTab` |
+| **`make hooks` target — needed, not built.** The agent-commit block activates per-clone via a manual `git config core.hooksPath .githooks`, so **a fresh clone has no commit block at all**. An enforcement treated as absolute currently depends on someone remembering a setup step. | Home for the fix is **Prompt 47 (fix `make install`)**, which is already about fresh-clone correctness — not a standalone task |
+
+**Immediate next:**
+
+1. Speed boundaries are render-verified and preview-verified but **not yet exported to
+   Photos end to end** — the first real `POST /motion-review/export` with a speed region
+   is still pending.
+2. Expand Climb Cutter with further features (current build focus).
+3. Graph View polish — full-library UMAP refit is done (2026-08-15); Phase 3 cosmetics and
+   the Phase 4/5 zoom + overlap work remain. Overlap is the most visible gap: tighter
+   concept clusters mean results stack more, not less.
+4. Real video semantic search (wanted soon, larger effort).
 
 ---
 
@@ -37,9 +69,10 @@ The principle holds: **each backend feature is its own file**, **each frontend v
 its own component**, and `server.py` stays thin — it just wires routes to the right
 module. That way a feature can be worked on without touching unrelated code.
 
-For the current actual tree, see `CLAUDE.md` — it's kept in sync with the repo.
-Files named in this doc that don't appear there (`duplicates.py`, `clustering.py`,
-`DuplicateReview.jsx`, `TimelineView.jsx`, `MoodBoard.jsx`) are **planned, not built**.
+For the current actual tree, read the repo or `docs/CODEBASE_MAP.md` — `CLAUDE.md` no
+longer carries a directory layout (it holds gotchas and contracts only). Files named in
+this doc that don't exist on disk (`duplicates.py`, `clustering.py`, `DuplicateReview.jsx`,
+`TimelineView.jsx`, `MoodBoard.jsx`) are **planned, not built** — see known gaps above.
 
 ---
 
