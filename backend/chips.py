@@ -46,7 +46,8 @@ DEFAULT_RESULT_SIZE = 24
 # builtin ticks are CLIP text queries — there is no pixel-statistic or
 # metadata-rule selection code anywhere in the photo path, so "blurry" and
 # "dark" are prompts, not measurements. Adding an engine means adding an
-# implementation in chip_resolve.ENGINES too.
+# implementation in chip_resolve.ENGINES and a validator in QUERY_VALIDATORS
+# below too.
 ENGINES = ("semantic",)
 
 # The six ticks as they behaved before the chip store existed, verbatim from
@@ -203,42 +204,66 @@ def validate(chip) -> dict:
     }
 
 
+def _validate_semantic_query(chip_id: str, query: dict) -> dict:
+    """Semantic engine's query payload: single prompt only, no negatives yet.
+
+    Split out of _validate_query so a new engine is a pure QUERY_VALIDATORS
+    registration below — no edit to this function or to the dispatcher.
+    """
+    prompts = query.get("prompts")
+    if not isinstance(prompts, list) or not prompts:
+        raise ValueError(f"chip {chip_id!r}: query.prompts must be a non-empty list")
+    for prompt in prompts:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError(f"chip {chip_id!r}: every prompt must be a non-blank string")
+    negatives = query.get("negatives", [])
+    if not isinstance(negatives, list):
+        raise ValueError(f"chip {chip_id!r}: query.negatives must be a list")
+
+    # The shape is a list so the schema can grow without a version bump,
+    # but the v1 semantic engine implements single-prompt only. Multi-prompt
+    # fusion and negative prompts have no defined semantics yet; accepting
+    # them here would silently select photos by an untested rule.
+    if len(prompts) != 1:
+        raise ValueError(
+            f"chip {chip_id!r}: multiple prompts are not supported in "
+            f"schema_version {SCHEMA_VERSION} (got {len(prompts)})"
+        )
+    if negatives:
+        raise ValueError(
+            f"chip {chip_id!r}: negative prompts are not supported in "
+            f"schema_version {SCHEMA_VERSION}"
+        )
+    return {"prompts": list(prompts), "negatives": []}
+
+
+# Every engine _validate_query can dispatch a payload check to. Mirrors
+# chip_resolve.ENGINES's shape: adding an engine's write-time validation is a
+# dict entry here, not a growing if/elif. tests/test_chip_migration.py pins
+# this set against chips.ENGINES and chip_resolve.ENGINES so the three can't
+# drift apart.
+QUERY_VALIDATORS = {"semantic": _validate_semantic_query}
+
+
 def _validate_query(chip_id: str, engine: str, query) -> dict:
-    """Engine-specific query payload validation."""
+    """Dispatch to the engine's query validator.
+
+    The isinstance check stays here, not in each validator: it's a generic
+    "query is an object" contract, not a semantic-engine-specific rule.
+    """
     if not isinstance(query, dict):
         raise ValueError(f"chip {chip_id!r}: query must be an object")
 
-    if engine == "semantic":
-        prompts = query.get("prompts")
-        if not isinstance(prompts, list) or not prompts:
-            raise ValueError(f"chip {chip_id!r}: query.prompts must be a non-empty list")
-        for prompt in prompts:
-            if not isinstance(prompt, str) or not prompt.strip():
-                raise ValueError(f"chip {chip_id!r}: every prompt must be a non-blank string")
-        negatives = query.get("negatives", [])
-        if not isinstance(negatives, list):
-            raise ValueError(f"chip {chip_id!r}: query.negatives must be a list")
-
-        # The shape is a list so the schema can grow without a version bump,
-        # but the v1 semantic engine implements single-prompt only. Multi-prompt
-        # fusion and negative prompts have no defined semantics yet; accepting
-        # them here would silently select photos by an untested rule.
-        if len(prompts) != 1:
-            raise ValueError(
-                f"chip {chip_id!r}: multiple prompts are not supported in "
-                f"schema_version {SCHEMA_VERSION} (got {len(prompts)})"
-            )
-        if negatives:
-            raise ValueError(
-                f"chip {chip_id!r}: negative prompts are not supported in "
-                f"schema_version {SCHEMA_VERSION}"
-            )
-        return {"prompts": list(prompts), "negatives": []}
-
-    # Unreachable while ENGINES is ("semantic",) — validate() checks membership
-    # first — but a new engine added there without a branch here should fail
-    # loudly rather than store an unvalidated payload.
-    raise ValueError(f"chip {chip_id!r}: no query validator for engine {engine!r}")
+    validator = QUERY_VALIDATORS.get(engine)
+    if validator is None:
+        # Unreachable while chips.ENGINES == QUERY_VALIDATORS.keys() — validate()
+        # checks engine membership in ENGINES first — but a new engine added
+        # there without a validator here must fail loudly with this ValueError,
+        # not a KeyError: load() only catches ValueError per-entry, and
+        # ensure_seeded() calls load() at server startup, so a KeyError here
+        # would take the whole server down instead of just dropping one chip.
+        raise ValueError(f"chip {chip_id!r}: no query validator for engine {engine!r}")
+    return validator(chip_id, query)
 
 
 # ── Reading ───────────────────────────────────────────────────────────────────

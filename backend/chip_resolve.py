@@ -11,9 +11,9 @@ constructing the same query by hand, which is how they drift. The old
 `/search/text` category branch was MOVED here, not copied: it no longer exists
 in server.py.
 
-Adding an engine means an entry in `ENGINES` here AND in `chips.ENGINES`
-(which is what validation checks against) — the two are held together by
-tests/test_chips.py.
+Adding an engine means an entry in `ENGINES` here, in `chips.ENGINES` (the
+validation allowlist), and in `chips.QUERY_VALIDATORS` (the payload validator)
+— the three are held together by tests/test_chip_migration.py.
 
 Logic only — routes live in server.py.
 """

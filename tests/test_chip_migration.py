@@ -268,11 +268,26 @@ class TestResolveDispatch:
         with pytest.raises(ValueError, match="no implementation for engine"):
             chip_resolve.resolve(chip, fake_chroma, None, None, None)
 
-    def test_every_declared_engine_has_an_implementation(self):
+    def test_every_declared_engine_has_an_implementation_and_a_validator(self):
         # chips.ENGINES is what validation accepts on write; chip_resolve.ENGINES
-        # is what can actually run. A member in the first without the second
-        # stores chips that fail at query time.
-        assert set(chips.ENGINES) == set(chip_resolve.ENGINES)
+        # is what can actually run; chips.QUERY_VALIDATORS is what checks the
+        # payload shape before either sees it. A name in any one of the three
+        # without the other two either can't be saved, can't be resolved, or
+        # stores an unvalidated payload — so all three must carry the same set.
+        registries = {
+            "chips.ENGINES": set(chips.ENGINES),
+            "chip_resolve.ENGINES": set(chip_resolve.ENGINES),
+            "chips.QUERY_VALIDATORS": set(chips.QUERY_VALIDATORS),
+        }
+        all_engines = set().union(*registries.values())
+
+        problems = []
+        for engine in sorted(all_engines):
+            missing_from = [name for name, members in registries.items() if engine not in members]
+            if missing_from:
+                problems.append(f"{engine!r} is missing from {', '.join(missing_from)}")
+
+        assert not problems, "; ".join(problems)
 
 
 class TestResolveResultSize:

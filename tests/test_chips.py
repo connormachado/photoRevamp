@@ -276,6 +276,15 @@ class TestValidateRejectsBadQueries:
             chips.validate(make_chip(query={"prompts": ["x"], "negatives": "y"}))
 
 
+class TestValidateQueryDispatchMiss:
+    def test_an_engine_absent_from_query_validators_raises_value_error_not_key_error(self):
+        # load() only catches ValueError per-entry, and ensure_seeded() calls
+        # load() at server startup — a KeyError escaping here instead would
+        # take the whole server down rather than just drop one bad chip.
+        with pytest.raises(ValueError, match="no query validator for engine 'ghost'"):
+            chips._validate_query("some-id", "ghost", {"prompts": ["x"]})
+
+
 class TestSchemaVersionOneIsSinglePromptOnly:
     """Multi-prompt fusion and negative prompts are REFUSED on purpose: the v1
     semantic engine implements one prompt, so accepting either would select
