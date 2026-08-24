@@ -1,94 +1,130 @@
 /**
- * The junk-cull chips.
+ * The junk-cull chip row.
  *
- * `CHIPS` is the single source of truth: the chip row renders it, and Junk Hunt
- * re-imports it to fire every query in parallel. So its invariants are a real
- * contract between two features, not just data shape.
+ * The chip LIST no longer lives here — it comes from the backend chip store
+ * (`photo_db/chips.json`, served by GET /chips), so the data invariants that
+ * used to be tested in this file (unique ids, unique prompts, no emoji in the
+ * prompt, lowercase/trimmed) moved to the backend suite `tests/test_chips.py`,
+ * where the schema is actually enforced. What's left here is the component's
+ * own contract: render what it's given, highlight the active one, and hand the
+ * whole chip object back on click.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
-import SearchChips, { CHIPS } from './SearchChips'
+import SearchChips from './SearchChips'
 
-describe('CHIPS', () => {
-  it('is a non-empty list', () => {
-    expect(CHIPS.length).toBeGreaterThan(0)
-  })
-
-  it('gives every chip an id, an emoji, a label and a query', () => {
-    for (const chip of CHIPS) {
-      expect(chip.id).toBeTruthy()
-      expect(chip.emoji).toBeTruthy()
-      expect(chip.label).toBeTruthy()
-      expect(chip.query).toBeTruthy()
-    }
-  })
-
-  it('keeps every query unique', () => {
-    // `query` is what's sent to CLIP for both a chip search and Junk Hunt —
-    // a duplicate is confusing but not identity-breaking, unlike `id`.
-    const queries = CHIPS.map((c) => c.query)
-    expect(new Set(queries).size).toBe(queries.length)
-  })
-
-  it('keeps every id unique', () => {
-    // `id` is the React key AND the persisted dismissal-ledger key — a
-    // duplicate would silently merge two chips' hide lists.
-    const ids = CHIPS.map((c) => c.id)
-    expect(new Set(ids).size).toBe(ids.length)
-  })
-
-  it('keeps emoji out of the query text', () => {
-    // The whole reason emoji is its own field: it would just be noise in the
-    // CLIP embedding.
-    for (const chip of CHIPS) {
-      expect(chip.query).not.toMatch(/\p{Extended_Pictographic}/u)
-      expect(chip.query).not.toContain(chip.emoji)
-    }
-  })
-
-  it('keeps queries as clean lowercase prompts with no stray whitespace', () => {
-    for (const chip of CHIPS) {
-      expect(chip.query).toBe(chip.query.trim())
-      expect(chip.query).toBe(chip.query.toLowerCase())
-      expect(chip.query).not.toMatch(/\s{2,}/)
-    }
-  })
-})
+// The wire shape GET /chips returns. Deliberately literal rather than imported
+// from anywhere — this file is the frontend's record of what it expects to be
+// handed, so a backend shape change should turn it red rather than follow along.
+const CHIPS = [
+  {
+    id: 'accidental',
+    label: 'Accidental photo',
+    emoji: '📷',
+    builtin: true,
+    enabled: true,
+    order: 0,
+    engine: 'semantic',
+    query: { prompts: ['accidental photo'], negatives: [] },
+    result_size: 24,
+  },
+  {
+    id: 'dark',
+    label: 'Dark or underexposed',
+    emoji: '🌑',
+    builtin: true,
+    enabled: true,
+    order: 1,
+    engine: 'semantic',
+    query: { prompts: ['dark or underexposed photo'], negatives: [] },
+    result_size: 24,
+  },
+  {
+    id: 'blurry',
+    label: 'Blurry or out of focus',
+    emoji: '💨',
+    builtin: true,
+    enabled: true,
+    order: 2,
+    engine: 'semantic',
+    query: { prompts: ['blurry or out of focus photo'], negatives: [] },
+    result_size: 24,
+  },
+]
 
 describe('<SearchChips>', () => {
-  it('renders one button per chip', () => {
-    render(<SearchChips query="" onSearch={() => {}} />)
+  it('renders one button per chip it is given', () => {
+    render(<SearchChips chips={CHIPS} query="" onSearch={() => {}} />)
     expect(screen.getAllByRole('button')).toHaveLength(CHIPS.length)
   })
 
   it('shows each chip’s label', () => {
-    render(<SearchChips query="" onSearch={() => {}} />)
+    render(<SearchChips chips={CHIPS} query="" onSearch={() => {}} />)
     for (const chip of CHIPS) {
       expect(screen.getByText(chip.label)).toBeInTheDocument()
     }
   })
 
+  it('renders nothing before the chip list has been fetched', () => {
+    // The list arrives asynchronously from GET /chips, so the first paint has
+    // an empty array. It must render an empty row, not crash.
+    render(<SearchChips chips={[]} query="" onSearch={() => {}} />)
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('survives the prop being omitted entirely', () => {
+    render(<SearchChips query="" onSearch={() => {}} />)
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+  })
+
+  it('renders chips in the order given, not sorted locally', () => {
+    // Display order is the store's `order` field, applied server-side. The
+    // component must not impose its own.
+    const reversed = [...CHIPS].reverse()
+    render(<SearchChips chips={reversed} query="" onSearch={() => {}} />)
+    const labels = screen.getAllByRole('button').map((b) => b.textContent)
+    expect(labels.map((l) => l.replace(/^\P{L}+/u, ''))).toEqual(
+      reversed.map((c) => c.label)
+    )
+  })
+
   it('fires a search with the whole chip object, keyed for the dismissal ledger', () => {
-    // The caller needs both `query` (what reaches CLIP) and `id` (the
-    // ledger key), so onSearch receives the chip, not a bare string.
+    // The caller needs both the prompt (what reaches CLIP, for the search box
+    // and label) and `id` (the ledger key and what /search/chip resolves), so
+    // onSearch receives the chip, not a bare string.
     const onSearch = vi.fn()
-    render(<SearchChips query="" onSearch={onSearch} />)
+    render(<SearchChips chips={CHIPS} query="" onSearch={onSearch} />)
     screen.getAllByRole('button')[0].click()
     expect(onSearch).toHaveBeenCalledWith(CHIPS[0])
   })
 
-  it('highlights the chip matching the active query', () => {
+  it('highlights the chip whose prompt matches the active query', () => {
     const active = CHIPS[2]
-    render(<SearchChips query={active.query} onSearch={() => {}} />)
+    render(
+      <SearchChips chips={CHIPS} query={active.query.prompts[0]} onSearch={() => {}} />
+    )
     const button = screen.getByText(active.label).closest('button')
     expect(button).toHaveStyle({ borderColor: '#818cf8' })
   })
 
   it('highlights nothing when the search box holds something else', () => {
-    render(<SearchChips query="sunset over the ocean" onSearch={() => {}} />)
+    render(
+      <SearchChips chips={CHIPS} query="sunset over the ocean" onSearch={() => {}} />
+    )
     for (const chip of CHIPS) {
       const button = screen.getByText(chip.label).closest('button')
       expect(button).not.toHaveStyle({ borderColor: '#818cf8' })
     }
+  })
+
+  it('matches on the prompt, never on the label', () => {
+    // Regression guard: the label is display text and the prompt is what goes
+    // to CLIP. Highlighting off the label would light the wrong chip up as
+    // soon as the two diverge, which an editable chip makes easy.
+    render(
+      <SearchChips chips={CHIPS} query={CHIPS[0].label} onSearch={() => {}} />
+    )
+    const button = screen.getByText(CHIPS[0].label).closest('button')
+    expect(button).not.toHaveStyle({ borderColor: '#818cf8' })
   })
 })

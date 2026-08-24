@@ -1,27 +1,21 @@
-// Suggested "cull the junk" prompt chips shown under the search bar.
-// Each chip has an emoji `label` for display, a clean `query` string that's
-// actually sent to CLIP (emoji would just be noise in the embedding), and a
-// stable `id`. `id` is the persisted dismissal-ledger key — renaming one
-// orphans its dismissals, so only add/remove ids deliberately; rewording
-// `query` is free.
-// Exported so Junk Hunt mode can fire the same six queries in parallel.
-export const CHIPS = [
-  { id: "accidental", emoji: "📷", label: "Accidental photo", query: "accidental photo" },
-  { id: "dark", emoji: "🌑", label: "Dark or underexposed", query: "dark or underexposed photo" },
-  { id: "blurry", emoji: "💨", label: "Blurry or out of focus", query: "blurry or out of focus photo" },
-  { id: "screenshot", emoji: "📄", label: "Screenshot or document", query: "screenshot or document" },
-  { id: "receipt", emoji: "🧾", label: "Receipt or invoice", query: "receipt or invoice" },
-  { id: "duplicate", emoji: "🔁", label: "Duplicate scene", query: "duplicate scene" },
-];
-
+// The "cull the junk" chip row shown under the search bar.
+//
+// The chip list is NOT defined here any more — it lives in the backend chip
+// store (`photo_db/chips.json`, served by GET /chips) so that a chip is one
+// saved object with one definition. `App.jsx` fetches it and passes it down.
+// A chip's wire shape is {id, label, emoji, engine, query: {prompts, negatives},
+// result_size, order, enabled, builtin}; only `prompts[0]` ever reaches CLIP,
+// and `id` is the persisted dismissal-ledger key.
+//
+// `chips` is the fetched list (already enabled-only and in display order).
 // `query` is the currently-active search string; the matching chip lights up.
-// `onSearch` fires with the whole chip object (not just the query) so the
+// `onSearch` fires with the whole chip object (not just the prompt) so the
 // caller can key a dismissal ledger and re-run the search on it.
-export default function SearchChips({ query, onSearch }) {
+export default function SearchChips({ chips = [], query, onSearch }) {
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
-      {CHIPS.map(chip => {
-        const active = query === chip.query;
+      {chips.map(chip => {
+        const active = query === chip.query.prompts[0];
         return (
           <button
             key={chip.id}

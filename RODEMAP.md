@@ -25,8 +25,13 @@ never a manual timeline you have to operate yourself.
 | frontend | React + Vite, port 5173 |
 | device | Apple Silicon Mac (torch device = `mps`) |
 
-Library is 56,773 photos indexed (as of 2026-08-22; 56,612 of them carry Graph View
-layout coords). Indexing targets the Photos **derivatives** cache so it stays compatible
+Library is **56,720 photos indexed as of 2026-08-24**, measured with `/stats.total`
+(i.e. `collection.count()` — not a raw `embedding_metadata` row count, which can read
+high while Chroma still has uncompacted deletes in its write-ahead queue). 56,612 carry
+Graph View layout coords. Expect this to drift downward on its own: `remove_missing_photos`
+runs at every server startup and prunes index rows for files already gone from disk — it
+deleted 37 on 2026-08-23 and 16 on 2026-08-24, which is index maintenance, not photo
+deletion. Indexing targets the Photos **derivatives** cache so it stays compatible
 with iCloud "Optimize Storage"; `apple_uuid` is stored in ChromaDB metadata so AppleScript
 operations can find the real asset.
 
@@ -88,6 +93,16 @@ this doc that don't exist on disk (`duplicates.py`, `clustering.py`, `DuplicateR
   (accidental, dark, blurry, screenshot, receipt, duplicate scene) fire in parallel and
   merge into one deduped cull queue.
 - **Search chips** — one-tap versions of those same six queries for normal searching.
+- **Chip store (2026-08-24)** — a chip is now a saved backend object, not a hardcoded
+  frontend array. `photo_db/chips.json` holds the definitions (`backend/chips.py`), and
+  `chip_resolve.resolve()` is the single path that selects photos for one, dispatching on
+  an `engine` enum. The tick row and Junk Hunt both fetch `GET /chips` and run
+  `POST /search/chip`; the old `category` parameter on `/search/text` is gone. Ships one
+  engine (`semantic`) because all six ticks are CLIP text queries at top-N — there is no
+  pixel-statistic or metadata-rule selection code in the photo path, so "blurry" and
+  "dark" are prompts, not measurements. Proven by an equivalence capture: result-id lists
+  for all six chips at n=24 and n=48, old path vs new, identical including order (12/12).
+  Foundation for a chip editor and the rot engine; neither exists yet.
 - **Per-filter photo dismissal** — "not this one, not here." Hide a photo from one
   junk-cull chip without touching the photo or the delete counter; persists to
   `photo_db/dismissed.json`, scoped per category so hiding from "blurry" doesn't affect

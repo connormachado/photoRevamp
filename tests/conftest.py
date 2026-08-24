@@ -21,6 +21,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -98,6 +99,28 @@ def isolate_config_store(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
     monkeypatch.setattr(config_store, "CONFIG_PATH", path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def isolate_chips(tmp_path, monkeypatch):
+    """Point the chip store and its stats sibling at tmp_path for EVERY test.
+
+    Same rationale as `isolate_stats`/`isolate_dismissed`/`isolate_config_store`:
+    without this, a test that seeds chips or resolves one would write into the
+    real repo's `photo_db/chips.json` and `photo_db/chip_stats.json`. Both
+    modules' reads never write (see their docstrings), so starting the
+    protection window after collection is safe.
+
+    Returns both paths so a test can assert on either file directly.
+    """
+    import chips
+    import chip_stats
+
+    chips_path = tmp_path / "chips.json"
+    stats_path = tmp_path / "chip_stats.json"
+    monkeypatch.setattr(chips, "CHIPS_PATH", chips_path)
+    monkeypatch.setattr(chip_stats, "CHIP_STATS_PATH", stats_path)
+    return SimpleNamespace(chips=chips_path, stats=stats_path)
 
 
 @pytest.fixture

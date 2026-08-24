@@ -1,8 +1,8 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import OpenInPhotosButton from "./components/OpenInPhotosButton";
 import SyncButton from "./components/SyncButton";
 import EmbedButton from "./components/EmbedButton";
-import SearchChips, { CHIPS } from "./components/SearchChips";
+import SearchChips from "./components/SearchChips";
 import { HideFromFilterButton, UndoToast } from "./components/HideFromFilter";
 import DeleteCounter from "./components/DeleteCounter";
 import { StatsProvider } from "./context/StatsContext";
@@ -234,6 +234,10 @@ export default function App() {
   // Null on typed/image search and "find similar" — those have no category to
   // hide a photo from, so the hide control doesn't render there.
   const [activeCategory, setActiveCategory] = useState(null);
+  // The chip row's list, fetched from the backend chip store on mount. Empty
+  // until it arrives — there is no hardcoded copy on this side any more, so
+  // the store is the single definition of what a chip is.
+  const [chips, setChips] = useState([]);
   // { label, categories, photo } for the "Hidden from X — Undo" toast.
   const [undo, setUndo] = useState(null);
   const fileRef = useRef();
@@ -248,6 +252,15 @@ export default function App() {
       .catch(() => {});
   });
 
+  // Load the chip row from the backend store on mount. Runs once — the store
+  // only changes when a chip is edited, which has no UI yet.
+  useEffect(() => {
+    fetch(`${API}/chips`)
+      .then(r => r.json())
+      .then(d => setChips(d.chips || []))
+      .catch(() => {});
+  }, []);
+
   // Refresh the header's "N photos indexed" after an embed run. useCallback keeps
   // this function identity stable across renders, so the effect in EmbedButton
   // that depends on it doesn't re-fire on every render.
@@ -255,11 +268,14 @@ export default function App() {
     setStats(prev => ({ ...(prev || {}), total }));
   }, []);
 
-  const searchByText = useCallback(async (q, n = 24, category = null) => {
+  // Typed search only. A chip search goes through runChip -> /search/chip, so
+  // this no longer carries a dismissal category — there is one selection path
+  // for chips and it isn't this one.
+  const searchByText = useCallback(async (q, n = 24) => {
     if (!q.trim()) return;
     setJunkHunt(false); // any direct search exits the junk queue
-    setActiveCategory(category || null);
-    lastSearchRef.current = (count) => searchByText(q, count, category);
+    setActiveCategory(null); // typed results have no chip to hide a photo from
+    lastSearchRef.current = (count) => searchByText(q, count);
     setLoading(true);
     setError("");
     setSearchLabel(`"${q}"`);
@@ -267,7 +283,7 @@ export default function App() {
       const res = await fetch(`${API}/search/text`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: q, n, ...(category ? { category } : {}) }),
+        body: JSON.stringify({ query: q, n }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -326,12 +342,37 @@ export default function App() {
     if (lastSearchRef.current) lastSearchRef.current(n);
   }, []);
 
-  // Clicking a chip mirrors typing its query and hitting Enter, scoped to that
-  // chip's dismissal category (searchByText sets activeCategory from it).
-  const runChip = useCallback((chip) => {
-    setQuery(chip.query);
-    searchByText(chip.query, resultCount, chip.id);
-  }, [searchByText, resultCount]);
+  // Clicking a chip runs it through the chip store's resolve path. The prompt
+  // text still goes in the search box, because that's what lights the chip up
+  // (SearchChips compares `query` against the chip's prompt) and what labels
+  // the results — but the selection itself is the backend's job now.
+  // `n` is threaded through explicitly (not read from the resultCount closure)
+  // so the count toggle's re-run uses the NEW count — setResultCount hasn't
+  // committed yet when changeCount calls back into here.
+  const runChip = useCallback(async (chip, n = 24) => {
+    const prompt = chip.query.prompts[0];
+    setJunkHunt(false); // any direct search exits the junk queue
+    setQuery(prompt);
+    setActiveCategory(chip.id);
+    lastSearchRef.current = (count) => runChip(chip, count);
+    setLoading(true);
+    setError("");
+    setSearchLabel(`"${prompt}"`);
+    try {
+      const res = await fetch(`${API}/search/chip`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chip_id: chip.id, n }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setResults(data.results);
+    } catch (e) {
+      setError("Couldn't reach the server. Is server.py running on port 5001?");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   // Junk Hunt: fire all six chip queries at once (each scoped to its own
   // dismissal category), merge + dedupe by path, and show the combined
@@ -348,11 +389,11 @@ export default function App() {
     lastSearchRef.current = null; // the count toggle doesn't apply to junk hunt
     try {
       const responses = await Promise.all(
-        CHIPS.map(chip =>
-          fetch(`${API}/search/text`, {
+        chips.map(chip =>
+          fetch(`${API}/search/chip`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query: chip.query, n: 48, category: chip.id }),
+            body: JSON.stringify({ chip_id: chip.id, n: 48 }),
           }).then(r => r.json()).then(data => ({ chip, data }))
         )
       );
@@ -376,7 +417,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [chips]);
 
   // Persist a per-category dismissal, optimistically drop the tile, backfill
   // the grid with a re-run of the current search, and surface an undo toast.
@@ -638,7 +679,7 @@ export default function App() {
 
           {/* Junk-cull prompt chips — fire a culling search on click */}
           {mode === "text" && (
-            <SearchChips query={junkHunt ? "" : query} onSearch={runChip} />
+            <SearchChips chips={chips} query={junkHunt ? "" : query} onSearch={chip => runChip(chip, resultCount)} />
           )}
 
           {/* Content-discovery suggestions (only before the first search) */}

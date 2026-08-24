@@ -132,7 +132,7 @@ and no `/open-in-photos`. Those names are stale; use `/full` and `/reveal`.
 
 - **Videos are indexed only as their static derivative stills.** `embed_photos.py` has no video handling, so a video matches on one frame's worth of content — which is why video results can look arbitrary. Real video semantic understanding does not exist yet.
 - **`GET /stats` is overloaded.** One merged payload: `total` is the live `collection.count()` (header "X photos indexed"), `deleted` / `reclaimed_bytes` / `reclaimed_breakdown` come from `stats.py`, and `avg_photo_bytes` is config echoed for the UI (never persisted). Don't repurpose `/stats` for just one of them — the header, `DeleteCounter`, and Settings > Storage all read from it. Bumps go through `POST /stats/increment` with `{delta, exact_bytes?}`; the byte accounting itself is documented in `backend/CLAUDE.md`. **The main page's reclaimed figure is photos-only, not the merged total** — Climb Cutter's GB-sized video trims used to drown out photo-cull savings on the header (it once read "1.7 GB", ~94% of which was video). `StatsContext` derives `photosReclaimedBytes` as the one place that sum lives; `DeleteCounter` and `StorageTab` both read it rather than each computing it. The Climb Cutter slice has its own home: `reclaimedBreakdown.climb_cutter` on the Settings > Storage tab.
-- **`incrementDeleteCount(exactBytes)` takes an argument, so never hand it straight to `onClick`.** React passes the click event as the first arg, which the server then tried to `int()` — a silent 500 on every `+` press, while `−` (arity 0) kept working, so the counter drifted down and looked like a persistence bug. Wrap it: `onClick={() => incrementDeleteCount()}`. `StatsContext.bump` now ignores any non-finite size, and a failed write rolls the optimistic count back rather than showing a number that vanishes on reload.
+- **`incrementDeleteCount(exactBytes)` takes an argument, so never hand it straight to `onClick`** — React passes the click event as the first arg. Wrap it: `onClick={() => incrementDeleteCount()}`. (`StatsContext.bump` now also ignores a non-finite size and rolls back a failed write, so this misfires quietly rather than 500ing.)
 - **Edit boundaries live in a two-file registry, and regions are the source of truth.** Every kind of timeline edit is declared once per side, keyed by the same type id string: `backend/edit_boundaries.py` (default params + the apply-on-export hook) and `photo-search/src/components/motion-review/boundaryTypes.js` (label, icon, colour, how it renders). Adding a type = one entry in each; nothing in `CutTimeline`, `motion_review.py` or `export_video.py` branches on a specific type. A type has two optional render slots: `renderBlock` draws inside the timeline's clipped rounded track, `renderOverlay` draws in the unclipped layer above it — interactive chrome belongs in the overlay, because a region is often only ~25px wide on screen while its controls are ~110px. The wire/disk shape is a **region** — `{id, type, start, end, params}` in seconds — and `cut_segments` / `keep_segments` / `trimmed_duration` are now *derived* from it by running `build_plan`, kept only so the savings ledger and the preview panels keep their old shape. Reviews written before the registry carry only `cut_segments` and upgrade to cut regions on read.
 
 - **Climb Cutter's verdict lifecycle: separate actions that must never be conflated.**
@@ -186,7 +186,8 @@ and no `/open-in-photos`. Those names are stale; use `/full` and `/reveal`.
     `remove_from_queue` over every `owned` queue entry and never calls `record_decision`,
     for the same reason.
 
-- **Chip queries are the single source of truth.** The junk-cull chips live in the exported `CHIPS` array in `SearchChips.jsx`. Junk Hunt re-imports `CHIPS` and fires all of them in parallel — edit the list in one place. Each chip is `{id, emoji, label, query}`; only `query` goes to CLIP. `id` is the persisted dismissal-ledger key (`photo_db/dismissed.json`) — renaming one orphans its dismissals, rewording `query` is free.
+- **A chip is a saved backend object and `chip_resolve.resolve()` is the ONLY thing that selects photos for one.** Definitions in `photo_db/chips.json` (`backend/chips.py`); tick row and Junk Hunt both fetch `GET /chips` and run `POST /search/chip`. No frontend chip list exists; `/search/text` is typed-search only. A new engine is **three** registrations — `chips.ENGINES`, a `_validate_query` branch, `chip_resolve.ENGINES`; skip the middle and `validate()` refuses every chip using it.
+  - **`id` is the dismissal-ledger key**, so `chips.py` imports `dismissed._CATEGORY_RE` rather than copying it and `update()` refuses an id change. Renaming orphans dismissals. v1 refuses multi-prompt/negatives deliberately.
 - **"Show in Photos" auto-bumps the delete counter; "Hide from this filter" must never copy that pattern.** On a successful `/reveal`, `OpenInPhotosButton` calls `incrementDeleteCount()` (an optimistic "about to delete" proxy) via `StatsContext`. The two live side by side in the photo detail modal but are opposites: dismissing a photo from a filter (`POST /filters/dismiss`, `backend/dismissed.py`) only ever writes `dismissed.json` — no `/reveal`, no stats write, no touch to the photo. It's a display filter, not a delete signal.
 - **For a new modal, copy `BulkAddPad`'s close pattern, not `App.jsx`'s photo-detail `Modal`.** The latter is older and only closes on outside-click — no Esc, no scroll-lock. `BulkAddPad`/`VerdictButtons`' `useEffect` (Esc + outside-click listeners added on open, removed on close) is the canonical one; `SettingsModal` follows it.
 
@@ -208,10 +209,12 @@ These load automatically in the folder they describe — read them there, don't 
 
 ## Status
 
-As of 2026-08-22: 56,773 photos in ChromaDB, every row carrying `date_taken` (int, Unix
-seconds UTC); 56,612 carry Graph View layout coords. Re-measure with `collection.count()`
-rather than trusting this line. Repo is a single `main` branch in sync with `origin/main`
-— no worktrees, no stashes.
+**The indexed-photo count moves on its own; a drop is not lost photos.**
+`remove_missing_photos` runs at every server startup and deletes index rows for files
+already gone from disk. Measure live via `/stats.total` (= `collection.count()`), never
+from a file; a raw `embedding_metadata` count reads high, as Chroma queues deletes
+until compaction.
 
-`RODEMAP.md` holds current status, the shipped-work log, the verified list of **known gaps
-(features that do not exist yet — check there before assuming one does)**, and next steps.
+`RODEMAP.md` holds current status and the dated library size, the shipped-work log, the
+verified list of **known gaps (features that do not exist yet — check there before assuming
+one does)**, and next steps.

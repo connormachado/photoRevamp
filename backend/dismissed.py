@@ -23,9 +23,15 @@ from utils import DEFAULT_DB_PATH
 
 DISMISSED_PATH = DEFAULT_DB_PATH / "dismissed.json"
 
-# The chip registry lives on the frontend (SearchChips.jsx) and shouldn't be
-# duplicated here, so a category is validated by shape rather than membership.
-_CATEGORY_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
+# A category key IS a chip id — chips.py imports this exact object rather than
+# re-declaring it, so the two can never drift into copies that disagree.
+#
+# `\Z`, not `$`: Python's `$` also matches just before a trailing newline, so
+# `^[a-z0-9_-]{1,40}$` accepted "dark\n" — a key that renders identically to
+# "dark" in the tick row but is a DIFFERENT ledger key, silently splitting a
+# chip's dismissals in two. That is the exact failure this validation exists to
+# prevent, so the anchor has to be the strict one.
+_CATEGORY_RE = re.compile(r"^[a-z0-9_-]{1,40}\Z")
 
 # Populated on first access, updated in place on every mutation — the one
 # module in this app that diverges from stats.py's read-every-call style,

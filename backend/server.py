@@ -27,6 +27,8 @@ import chromadb
 import search
 import graph_view
 import cleanup
+import chips as chip_store
+import chip_resolve
 import config_store
 import motion_review
 import queue_removal
@@ -186,20 +188,10 @@ def search_text():
     if not query:
         return jsonify({"error": "empty query"}), 400
 
-    # A category scopes this search to one junk-cull chip's dismissal ledger.
-    # A typed search carries no category and is never filtered — absent or
-    # invalid, this is a no-op rather than a 400, since the chip registry that
-    # defines valid categories lives on the frontend.
-    category = data.get("category")
-    exclude_ids = None
-    if isinstance(category, str) and category:
-        try:
-            exclude_ids = set(dismissed_store.get_dismissed(category))
-        except ValueError:
-            exclude_ids = None
-
-    results = search.search_text(query, n, collection, model, tokenizer, device,
-                                 exclude_ids=exclude_ids)
+    # Typed search only — no dismissal filtering. A chip search goes through
+    # POST /search/chip, which is the one path that selects photos for a chip;
+    # this route's old `category` parameter moved into chip_resolve.
+    results = search.search_text(query, n, collection, model, tokenizer, device)
     return jsonify({"results": results})
 
 
@@ -223,6 +215,42 @@ def search_image():
         return jsonify({"error": "could not decode image"}), 400
 
     results = search.search_image(img, n, collection, model, preprocess, device)
+    return jsonify({"results": results})
+
+
+# ── Chips (saved photo-selection filters) ────────────────────────────────────
+
+@app.route("/chips")
+def chips_list():
+    """The tick row's chip list — enabled only, in display order."""
+    return jsonify({"chips": chip_store.list_chips(enabled_only=True)})
+
+
+@app.route("/search/chip", methods=["POST"])
+def search_chip():
+    """Run one chip. The ONLY route that selects photos for a chip.
+
+    `n` is optional and overrides the chip's own result_size, which is a
+    default rather than a cap — the count toggle and Junk Hunt both pass one.
+    """
+    data = _json_body()
+    chip_id = data.get("chip_id")
+    if not isinstance(chip_id, str) or not chip_id:
+        return jsonify({"error": "no chip_id provided"}), 400
+    chip = chip_store.get(chip_id)
+    if chip is None:
+        return jsonify({"error": f"no such chip: {chip_id}"}), 404
+
+    n = None
+    if data.get("n") is not None:
+        n = _int_param("n", chip["result_size"], minimum=1, maximum=MAX_RESULTS, source=data)
+        if n is None:
+            return jsonify({"error": "n must be a number"}), 400
+
+    try:
+        results = chip_resolve.resolve(chip, collection, model, tokenizer, device, n=n)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"results": results})
 
 
@@ -647,6 +675,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     config_store.ensure_seeded()
+    chip_store.ensure_seeded()
     load_everything(args.db)
 
     # Prune entries for photos deleted off disk so they stop polluting search.
