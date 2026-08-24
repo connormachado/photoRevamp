@@ -255,25 +255,262 @@ class TestSafeName:
         assert Path(name).suffix in vu.VIDEO_EXTS
 
     @pytest.mark.parametrize("name", ["日本語.mp4", "😀😀😀.mov"])
-    @pytest.mark.xfail(
-        strict=True,
-        reason="_safe_name promises 'preserving the extension where possible', but "
-               "a name whose stem is entirely non-ASCII loses it. secure_filename "
-               "transliterates '日本語.mp4' to '.mp4' and then strips the leading "
-               "'.', yielding 'mp4' — non-empty, so the fallback branch (which "
-               "WOULD have restored '.mp4') never runs, and the clip is parked as a "
-               "file literally named 'mp4' with no suffix. Reached by uploading any "
-               "CJK/emoji-named clip. Impact is cosmetic rather than functional "
-               "(ffmpeg probes by content, and the preview proxy lives under "
-               "preview/, not beside the source) but the queue row's `source_name` "
-               "— motion_review.py:283, a basename — then reads 'mp4'. Correct "
-               "behaviour: rebuild the name from the original suffix whenever the "
-               "sanitised name has lost it.",
-    )
     def test_a_non_ascii_stem_still_keeps_its_extension(self, name):
         import video_upload as vu
 
         assert Path(vu._safe_name(name)).suffix == Path(name).suffix
+
+
+# Names that are over the byte limit by one route or another. `secure_filename`
+# NFKD-normalises before its ASCII strip, so which multi-byte input survives is
+# not obvious: "é" and fullwidth "Ａ" decompose to real ASCII letters and leave a
+# 300-character stem that then has to be byte-capped, while Japanese and emoji
+# strip to nothing and fall through to the placeholder instead. Both routes have
+# to land inside NAME_MAX.
+OVERLONG_NAMES = [
+    "a" * 300 + ".mov",                 # plain ASCII
+    "é" * 300 + ".mp4",                 # 600 source bytes → 300 ASCII "e"s
+    "Ａ" * 300 + ".mkv",                 # 900 source bytes → 300 ASCII "A"s
+    "あ" * 200 + ".mp4",                 # 600 source bytes → nothing
+    "😀" * 100 + ".mov",                 # 400 source bytes → nothing
+    "../" * 100 + "b" * 300 + ".m4v",   # traversing AND overlong at once
+]
+
+# The module's allowlist, copied so parametrize can run at collection time without
+# paying video_upload's torch import. Kept honest by
+# TestSafeNameExtensionSurvival::test_the_copied_extension_list_matches_the_module.
+ALLOWED_EXTS = [".avi", ".m4v", ".mkv", ".mov", ".mp4"]
+
+
+class TestSafeNameLength:
+    """APFS's NAME_MAX is 255 *bytes* per path component, and this is the only
+    place a browser-supplied name becomes one. A name over the limit is a failed
+    upload (OSError out of `os.replace`), not a cosmetic problem — so the cap is
+    the contract, and it is counted in bytes rather than characters."""
+
+    @pytest.mark.parametrize("name", OVERLONG_NAMES)
+    def test_no_name_can_exceed_the_filesystem_limit(self, name):
+        import video_upload as vu
+
+        assert len(vu._safe_name(name).encode("utf-8")) <= vu.APFS_NAME_MAX
+
+    @pytest.mark.parametrize("name", ["あ" * 200 + ".mp4", "é" * 300 + ".mp4",
+                                      "Ａ" * 300 + ".mp4", "😀" * 100 + ".mp4"])
+    def test_a_long_multibyte_name_is_capped_in_bytes_and_keeps_its_extension(self, name):
+        """Character count is not byte count: 200 "あ" is 600 bytes on disk. Whether
+        the stem transliterates into ASCII or vanishes entirely, the result has to
+        fit the limit and still be a `.mp4` file."""
+        import video_upload as vu
+
+        result = vu._safe_name(name)
+        assert len(result.encode("utf-8")) <= vu.APFS_NAME_MAX
+        assert Path(result).suffix == ".mp4"
+        assert Path(result).stem, "a bare extension would be a hidden, stem-less file"
+
+    def test_a_long_ascii_name_is_truncated_rather_than_given_up_on(self):
+        """The cap must reclaim bytes from the stem, not fall back to the
+        placeholder — the original basename is the queue's `source_name`, so an
+        over-long pick should still be recognisable to the user."""
+        import video_upload as vu
+
+        result = vu._safe_name("a" * 300 + ".mov")
+        stem = Path(result).stem
+
+        assert len(result.encode("utf-8")) <= vu.APFS_NAME_MAX
+        assert Path(result).suffix == ".mov"
+        assert set(stem) == {"a"}, "the kept stem must be a prefix of the original"
+        assert len(stem) > 200, f"truncated to {len(stem)} chars — that is a stub, not a name"
+
+    @pytest.mark.parametrize("over_budget_by", [-1, 0, 1])
+    def test_the_cap_only_bites_on_a_stem_over_the_budget(self, over_budget_by):
+        """Off-by-one around the exact limit. The budget is defined by the module's
+        own constant, so this cannot drift from the implementation the way a
+        hardcoded 251 would."""
+        import video_upload as vu
+
+        budget = vu.APFS_NAME_MAX - len(".mov".encode("utf-8"))
+        stem = "a" * (budget + over_budget_by)
+
+        result = vu._safe_name(stem + ".mov")
+
+        assert Path(result).suffix == ".mov"
+        if over_budget_by <= 0:
+            assert result == stem + ".mov", "a stem that fits must not be shortened"
+        else:
+            assert len(Path(result).stem.encode("utf-8")) == budget
+
+    @pytest.mark.parametrize("name", HOSTILE_NAMES + OVERLONG_NAMES + [
+        "clip.mov", "IMG_1234.MOV", "clip.movie", "noextension", "clip.", "",
+    ])
+    def test_every_result_is_one_usable_component_inside_the_limit(self, name):
+        """The union of the two properties this function exists for, swept over
+        everything: whatever comes in, what comes out is a single, non-empty,
+        video-extensioned path component the filesystem will accept."""
+        import video_upload as vu
+
+        result = vu._safe_name(name)
+        assert Path(result).name == result
+        assert len(result.encode("utf-8")) <= vu.APFS_NAME_MAX
+        assert Path(result).stem
+        assert Path(result).suffix.lower() in vu.VIDEO_EXTS
+
+
+class TestSafeNameExtensionSurvival:
+    """The extension must survive every route through the function. It is derived
+    from the ORIGINAL name and reattached after sanitisation precisely because
+    sanitising "stem.ext" in one pass let a stem that transliterates to nothing
+    take the separating dot with it, leaving a bare "mp4" — no dot, no stem, and a
+    file ffmpeg would then have to demux by content."""
+
+    def test_the_copied_extension_list_matches_the_module(self):
+        import video_upload as vu
+
+        assert set(ALLOWED_EXTS) == vu.VIDEO_EXTS
+
+    @pytest.mark.parametrize("ext", ALLOWED_EXTS)
+    def test_a_recognised_extension_survives_a_normal_stem_verbatim(self, ext):
+        import video_upload as vu
+
+        assert vu._safe_name(f"IMG_1234{ext}") == f"IMG_1234{ext}"
+
+    @pytest.mark.parametrize("name", ["IMG_1234.MOV", "clip.Mp4", "clip.MKV"])
+    def test_a_recognised_extension_keeps_its_original_case(self, name):
+        """The allowlist is matched case-insensitively (the iPhone hands over
+        `.MOV`), so the case the user gave is carried through rather than
+        normalised — the parked name is what the queue shows as `source_name`."""
+        import video_upload as vu
+
+        assert Path(vu._safe_name(name)).suffix == Path(name).suffix
+
+    @pytest.mark.parametrize("name", ["日本語.mp4", "😀😀.mkv", "...mkv", "  .avi",
+                                      "___.m4v", "🏔🏔.m4v"])
+    def test_a_stem_that_sanitises_away_keeps_the_extension_and_gains_a_stem(self, name):
+        """The regression that motivated the rewrite: "日本語.mp4" must not become the
+        stem-less "mp4"."""
+        import video_upload as vu
+
+        result = vu._safe_name(name)
+        ext = Path(name).suffix
+
+        assert Path(result).suffix == ext
+        assert Path(result).stem
+        assert result != ext.lstrip("."), "the extension was swallowed as the stem"
+        assert result == f"video{ext}"      # the module's placeholder, spelled out
+
+    @pytest.mark.parametrize("name", ["clip.movie", "clip", "clip.", "clip.txt",
+                                      "clip.mov.zip", "noextension", "", None])
+    def test_an_unrecognised_or_missing_extension_falls_back_to_mov(self, name):
+        """`save_and_process`'s allowlist rejects these before they ever get here,
+        so this is `_safe_name`'s own belt and braces for its other caller
+        (`_settle_path`) — the destination must still be a video-named file."""
+        import video_upload as vu
+
+        result = vu._safe_name(name)
+        assert Path(result).suffix == ".mov"
+        assert Path(result).stem
+
+    @pytest.mark.parametrize("ext", ALLOWED_EXTS)
+    def test_truncation_never_eats_into_the_extension(self, ext):
+        """Documented: the cap truncates the stem only. Trimming the tail instead
+        would strip the extension off exactly the longest names."""
+        import video_upload as vu
+
+        result = vu._safe_name("a" * 400 + ext)
+
+        assert Path(result).suffix == ext
+        assert len(result.encode("utf-8")) <= vu.APFS_NAME_MAX
+
+    @pytest.mark.parametrize("name", ["IMG_1234.MOV", "clip.mp4", "clip.mKv",
+                                      "../../etc/passwd.mov", "a" * 300 + ".avi"])
+    def test_anything_the_upload_gate_admits_keeps_a_video_extension(self, name):
+        """Coherence between the two halves: `save_and_process` gates on
+        `suffix.lower() in VIDEO_EXTS`, so any name it admits must come out of
+        `_safe_name` still carrying an extension from the same allowlist. (Every
+        name here is ordinary ASCII case variation — "clip.mKv" is a plain
+        capital K, not the confusable below, which gets its own test.)"""
+        import video_upload as vu
+
+        assert Path(name).suffix.lower() in vu.VIDEO_EXTS, "not a gate-admitted name"
+        assert Path(vu._safe_name(name)).suffix.lower() in vu.VIDEO_EXTS
+
+    def test_a_non_ascii_confusable_extension_is_canonicalised_not_preserved(self):
+        """`str.lower()` folds some non-ASCII codepoints onto plain ASCII letters
+        — U+212A KELVIN SIGN -> "k" is one — so a name can pass the
+        `suffix.lower() in VIDEO_EXTS` gate while its extension is NOT actually
+        ASCII. Preserving the original characters here would park the file under
+        an extension that is a different codepoint from every real ".mkv", which
+        nothing else in this app would ever match against. The gate matched via
+        the lowercased form, so that lowercased form — not the confusable
+        original — is what must reach the filesystem."""
+        import video_upload as vu
+
+        kelvin_ext_name = "clip.mKv"      # real KELVIN SIGN, not ASCII "K"
+        assert kelvin_ext_name.lower().endswith(".mkv")
+        assert not kelvin_ext_name.isascii()
+
+        result = vu._safe_name(kelvin_ext_name)
+
+        assert result.isascii(), "a confusable character leaked into the stored name"
+        assert Path(result).suffix == ".mkv"
+
+
+class TestSafeNameStability:
+    """Same name in, same name out — and the same name twice is not this
+    function's problem to solve."""
+
+    @pytest.mark.parametrize("name", HOSTILE_NAMES + OVERLONG_NAMES +
+                             ["IMG_1234.MOV", "日本語.mp4"])
+    def test_re_sanitising_an_already_safe_name_is_a_no_op(self, name):
+        """Reachable: the user re-picks the parked copy out of `uploads/`, so the
+        browser hands back a name this function itself produced. It must not drift
+        a little further on each pass."""
+        import video_upload as vu
+
+        once = vu._safe_name(name)
+        assert vu._safe_name(once) == once
+
+    @pytest.mark.parametrize("name", ["IMG_1234.MOV", "a" * 300 + ".mov", "日本語.mp4"])
+    def test_the_same_input_always_produces_the_same_output(self, name):
+        """No randomness, no counter, no uuid: the parked path IS the video's
+        identity (md5-of-absolute-path), so a name that varied between calls would
+        make a re-pick a different video."""
+        import video_upload as vu
+
+        assert vu._safe_name(name) == vu._safe_name(name)
+
+    def test_two_overlong_names_truncating_alike_are_not_disambiguated_here(self):
+        """EXPECTED, not a bug: real collision avoidance happens one layer up, in
+        `_settle_path`, which keys the destination DIRECTORY by content hash — two
+        different clips can never share a directory whatever they are called, and
+        two identical clips are meant to share a path. `_safe_name` therefore has
+        no disambiguating to do, and this test exists so a later reader does not
+        mistake it for the thing that keeps names unique."""
+        import video_upload as vu
+
+        assert vu._safe_name("a" * 300 + ".mov") == \
+            vu._safe_name("a" * 400 + "_shot_two.mov")
+
+    def test_two_overlong_names_that_truncate_alike_still_both_queue(self, uploads):
+        """That claim, proven through the caller rather than left as prose: two
+        different clips whose names truncate to the SAME basename must still park
+        as two files, two video_ids and two queue rows, neither overwriting the
+        other. This is the property that makes `_safe_name`'s lack of
+        disambiguation safe, and it is what would break first if the hash
+        directory ever stopped being content-derived."""
+        vu = uploads.module
+        name_a, name_b = "a" * 300 + "_take_one.mov", "a" * 300 + "_take_two.mov"
+        assert vu._safe_name(name_a) == vu._safe_name(name_b), "not a collision case"
+
+        first = vu.save_and_process(pick(name_a, b"climb one"))
+        second = vu.save_and_process(pick(name_b, b"climb two"))
+
+        assert [first["status"], second["status"]] == ["queued", "queued"]
+        assert first["video_id"] != second["video_id"]
+        stored = uploads.stored_files()
+        assert len(stored) == 2
+        assert {p.name for p in stored} == {vu._safe_name(name_a)}   # same basename…
+        assert stored[0].parent != stored[1].parent                  # …different dirs
+        assert {p.read_bytes() for p in stored} == {b"climb one", b"climb two"}
 
 
 # ── _settle_path ──────────────────────────────────────────────────────────────
@@ -508,20 +745,6 @@ class TestQueueing:
         assert set(uploads.module.save_and_process(pick("a.mov"))) == expected
         assert set(uploads.module.save_and_process(pick("a.txt"))) == expected
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="A long-but-legal browser filename fails the upload outright. "
-               "_safe_name promises 'a filesystem-safe basename' but never caps "
-               "length, so a 300-character name reaches os.replace in _settle_path "
-               "and macOS (NAME_MAX=255 per component on APFS) rejects it with "
-               "OSError errno 63. save_and_process catches it, so the request does "
-               "not 500 — the user just gets status 'error' with '[Errno 63] File "
-               "name too long' and no queue row, for a perfectly valid video. "
-               "Reached by picking any file with a very long name (screen "
-               "recordings and auto-generated exports get close). Correct "
-               "behaviour: truncate the stem to fit NAME_MAX while keeping the "
-               "extension, and park the clip.",
-    )
     def test_a_very_long_filename_still_queues(self, uploads):
         result = uploads.module.save_and_process(pick("a" * 300 + ".mov"))
         assert result["status"] == "queued", result["error"]

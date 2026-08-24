@@ -540,6 +540,29 @@ render pipeline.
   `backfill_dates.py --write` against the grown 56,773-row library reported 0 written
   / 0 misses, confirming the indexer and the backfill agree.
 
+- ✅ **`_safe_name` filename-length cap + non-ASCII extension fix** (Aug 2026). Closed both
+  defects that used to sit in this list below. Capped the stem at APFS's 255-byte
+  `NAME_MAX`, measured in UTF-8 bytes rather than characters (a multi-byte original name is
+  transliterated to ASCII by `secure_filename` before truncation, so the byte/char gap
+  never actually shows up in the output today — the cap is still written in bytes, since
+  the sanitisation strategy could change). Extension is now derived from the original
+  filename independently of the sanitised stem, so a stem that transliterates to nothing
+  (`日本語.mp4`) can no longer take the separating dot with it — the queue row's
+  `source_name` no longer reads a bare `mp4`. A same-day follow-up pass also canonicalised
+  a Unicode confusable: `str.lower()` folds U+212A KELVIN SIGN onto ASCII "k", so a name
+  could pass the `VIDEO_EXTS` allowlist while its stored extension was a different
+  codepoint from every real `.mkv` — fixed by writing the matched canonical form, not the
+  original characters. Both strict xfails flipped to passing assertions; `test-author`
+  added 96 tests, net +91 after a later pass deleted 6 that were tied to a
+  `_SUFFIX_HEADROOM` byte reservation nothing in the codebase ever consumed (see
+  `backend/CLAUDE.md`). Full suite 1095 pytest + 206 Vitest green. Live-verified against
+  the real server, not just the suite — which caught its own bug: the running process
+  hadn't restarted since Aug 16 and was silently serving pre-fix code until relaunched (now
+  a documented gotcha in `backend/CLAUDE.md`). After restart: a 320-char name,
+  `日本語.mp4`, an emoji `.mov`, and a genuine Kelvin-sign `.mKv` all queued with
+  extensions intact and sane `source_name`s; a pre-existing queue entry was confirmed
+  byte-identical (md5 + mtime) before and after.
+
 **Known defects (documented as `xfail(strict)`, awaiting a decision — don't silence them):**
 - `build_plan` **drops footage** under an unrecognised region type: `get_type` returns None
   so no Pieces are emitted, but the cursor still advances past the span. The frontend
@@ -547,11 +570,6 @@ render pipeline.
   whether "I don't recognise this" should lose the user's footage at all. Only reachable
   from unsanitised regions (a draft written by a newer build); `sanitize_regions` strips
   unknown types on normal API traffic.
-- `_safe_name` **loses the extension on a non-ASCII filename** — `日本語.mp4` parks as a file
-  named `mp4`, and the queue row's `source_name` reads `mp4`. Cosmetic (ffmpeg probes by
-  content) but the docstring promises otherwise.
-- `_safe_name` **never caps length**, so a ~300-char filename fails the upload with a bare
-  `OSError [Errno 63]` and no queue row for a perfectly valid video.
 
 ---
 

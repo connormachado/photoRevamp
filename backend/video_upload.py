@@ -63,17 +63,47 @@ def _content_hash(path: Path) -> str:
     return h.hexdigest()[:HASH_PREFIX_LEN]
 
 
+APFS_NAME_MAX = 255      # bytes per path component (macOS/APFS)
+
+
 def _safe_name(filename: str) -> str:
     """A filesystem-safe basename, preserving the extension where possible.
 
     `secure_filename` can legitimately return "" (e.g. a name that is entirely
     non-ASCII), which would otherwise produce a directory-as-destination bug.
+
+    The extension is derived from the ORIGINAL name and reattached after the
+    stem is sanitised, independently of whatever `secure_filename` does to the
+    stem — sanitising the full "stem.ext" string in one pass let a stem that
+    transliterates to nothing (e.g. "日本語") strip the separating dot along
+    with it, leaving a bare extension like "mp4" with no dot and no stem.
+    Length is capped in UTF-8 bytes (APFS's NAME_MAX is a byte limit, not a
+    character one) by truncating the stem only, never the extension.
     """
-    name = secure_filename(filename or "")
-    if not name:
-        ext = Path(filename or "").suffix.lower()
-        name = f"video{ext if ext in VIDEO_EXTS else '.mov'}"
-    return name
+    filename = filename or ""
+    raw_ext = Path(filename).suffix
+    if raw_ext.lower() not in VIDEO_EXTS:
+        ext = ".mov"
+    elif raw_ext.isascii():
+        ext = raw_ext                # same characters, different case: keep it, e.g. ".MOV"
+    else:
+        # str.lower() folds some non-ASCII codepoints onto ASCII letters (e.g.
+        # U+212A KELVIN SIGN -> "k"), so a name can pass the VIDEO_EXTS check
+        # without its extension actually BEING ASCII. Emit the canonical form
+        # that passed the check, not the confusable original — otherwise this
+        # file's extension is a different codepoint from every real ".mkv".
+        ext = raw_ext.lower()
+
+    stem = secure_filename(Path(filename).stem)
+    if not stem:
+        stem = "video"
+
+    max_stem_bytes = APFS_NAME_MAX - len(ext.encode("utf-8"))
+    stem_bytes = stem.encode("utf-8")
+    if len(stem_bytes) > max_stem_bytes:
+        stem = stem_bytes[:max_stem_bytes].decode("utf-8", "ignore")
+
+    return f"{stem}{ext}"
 
 
 def _settle_path(staged: Path, filename: str) -> Path:
